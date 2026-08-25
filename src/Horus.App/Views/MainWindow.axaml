@@ -1,0 +1,143 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Horus.App.ViewModels"
+        xmlns:rows="using:Horus.App.ViewModels"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="980" d:DesignHeight="640"
+        x:Class="Horus.App.Views.MainWindow"
+        x:DataType="vm:MainViewModel"
+        Icon="/Assets/avalonia-logo.ico"
+        Width="980"
+        Height="640"
+        MinWidth="760"
+        MinHeight="480"
+        Title="HORUS">
+
+    <Design.DataContext>
+        <!-- This only sets the DataContext for the previewer in an IDE,
+             to set the actual DataContext for runtime, set the DataContext property in code (look at App.axaml.cs) -->
+        <vm:MainViewModel />
+    </Design.DataContext>
+
+    <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="24">
+        <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,20">
+            <StackPanel Spacing="4">
+                <TextBlock Text="HORUS" FontSize="28" FontWeight="SemiBold" />
+                <TextBlock Text="Hardware telemetry at a glance" Opacity="0.65" />
+            </StackPanel>
+
+        </Grid>
+
+        <Border Grid.Row="1"
+                Margin="0,0,0,12"
+                Padding="14,10"
+                CornerRadius="10"
+                Background="#0DFFFFFF">
+            <Grid ColumnDefinitions="Auto,Auto,16,Auto,Auto,*,Auto,Auto" ColumnSpacing="10">
+                <TextBlock Text="Temperature unit" VerticalAlignment="Center" Opacity="0.72" />
+                <ComboBox Grid.Column="1"
+                          Width="76"
+                          ItemsSource="{Binding TemperatureUnits}"
+                          SelectedItem="{Binding SelectedTemperatureUnit}" />
+
+                <Button Grid.Column="3" Padding="12,6">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="Event log" />
+                        <Border Background="#24FFFFFF" CornerRadius="10" Padding="7,1">
+                            <TextBlock Text="{Binding AlertLogCount}" />
+                        </Border>
+                    </StackPanel>
+                </Button>
+
+                <Button Grid.Column="4"
+                        Content="Reset min/max"
+                        Command="{Binding ResetMinMaxCommand}"
+                        Padding="12,6" />
+
+                <TextBlock Grid.Column="6" Text="Start with Windows" VerticalAlignment="Center" Opacity="0.72" />
+                <ToggleSwitch Grid.Column="7"
+                              IsChecked="{Binding StartWithWindows}"
+                              IsEnabled="{Binding StartupSettingAvailable}" />
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="2" CornerRadius="12" Background="#0DFFFFFF" ClipToBounds="True">
+            <Grid RowDefinitions="Auto,*">
+                <Grid ColumnDefinitions="*,120,120,120,70" Background="#12FFFFFF" Height="42">
+                    <TextBlock Margin="18,0" Text="Sensor" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="Current" FontWeight="SemiBold"
+                               HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" />
+                    <TextBlock Grid.Column="2" Text="Min" FontWeight="SemiBold"
+                               HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" />
+                    <TextBlock Grid.Column="3" Text="Max" FontWeight="SemiBold"
+                               HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" />
+                    <TextBlock Grid.Column="4" Text="Unit" FontWeight="SemiBold"
+                               HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" />
+                </Grid>
+
+                <ScrollViewer Grid.Row="1">
+                    <ItemsControl ItemsSource="{Binding Sensors}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="rows:SensorRowViewModel">
+                                <Border Padding="18,11" BorderBrush="#12FFFFFF" BorderThickness="0,0,0,1">
+                                    <Grid ColumnDefinitions="*,120,120,120,70">
+                                        <Grid ColumnDefinitions="24,*">
+                                            <TextBlock Text="{Binding Prefix}"
+                                                       VerticalAlignment="Center"
+                                                       Opacity="0.6" />
+                                            <StackPanel Grid.Column="1" Spacing="2">
+                                                <TextBlock Text="{Binding Name}" FontSize="15" FontWeight="SemiBold" />
+                                                <TextBlock Text="{Binding Description}" FontSize="11" Opacity="0.5" />
+                                            </StackPanel>
+                                        </Grid>
+                                        <TextBlock Grid.Column="1"
+                                                   Text="{Binding Current}"
+                                                   FontSize="16"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center"
+                                                   TextAlignment="Center" />
+                                        <TextBlock Grid.Column="2"
+                                                   Text="{Binding Minimum}"
+                                                   FontSize="16"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center"
+                                                   TextAlignment="Center" />
+                                        <TextBlock Grid.Column="3"
+                                                   Text="{Binding Maximum}"
+                                                   FontSize="16"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center"
+                                                   TextAlignment="Center" />
+                                        <TextBlock Grid.Column="4"
+                                                   Text="{Binding Unit}"
+                                                   FontSize="14"
+                                                   Opacity="0.6"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center"
+                                                   TextAlignment="Center" />
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+
+                <Border Grid.RowSpan="2"
+                        Width="120"
+                        Margin="0,0,70,0"
+                        HorizontalAlignment="Right"
+                        BorderBrush="#3B82F6"
+                        BorderThickness="2,0,2,0"
+                        IsHitTestVisible="False"
+                        ZIndex="10" />
+            </Grid>
+        </Border>
+
+        <TextBlock Grid.Row="3"
+                   Margin="0,16,0,0"
+                   Text="{Binding StatusMessage}"
+                   Opacity="0.65" />
+    </Grid>
+
+</Window>

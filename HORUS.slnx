@@ -1,0 +1,5 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Horus.App/Horus.App.csproj" />
+  </Folder>
+</Solution>
