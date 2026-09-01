@@ -7,6 +7,7 @@ HORUS is a modern, security-first Windows hardware monitor built with .NET 10 an
 - Automatic CPU discovery through Windows WMI/CIM
 - Live total and per-logical-processor load readings
 - Session minimum and maximum tracking
+- Rolling 60-second live graph for any selected sensor
 - Persistent user settings
 - Optional per-user startup with Windows
 - English-only user interface
@@ -34,4 +35,4 @@ dotnet run --project src/Horus.App/Horus.App.csproj
 
 ## Status
 
-HORUS is in early development. CPU load monitoring is functional; additional hardware providers and tray sensor support are planned.
+HORUS is in early development. CPU load monitoring and live sensor graphs are functional; additional hardware providers and tray sensor support are planned.

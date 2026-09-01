@@ -1,9 +1,14 @@
 using CommunityToolkit.Mvvm.ComponentModel;
+using LiveChartsCore;
+using LiveChartsCore.Defaults;
+using LiveChartsCore.SkiaSharpView;
+using System.Collections.ObjectModel;
 
 namespace Horus.App.ViewModels;
 
 public partial class SensorRowViewModel : ViewModelBase
 {
+    private const int MaximumChartPoints = 60;
     private double? _currentValue;
     private double? _minimumValue;
     private double? _maximumValue;
@@ -18,6 +23,41 @@ public partial class SensorRowViewModel : ViewModelBase
         Description = description;
         Unit = unit;
         IsDevice = isDevice;
+
+        ChartValues = [];
+        Series =
+        [
+            new LineSeries<DateTimePoint>
+            {
+                Name = name,
+                Values = ChartValues,
+                Fill = null,
+                GeometrySize = 0,
+                LineSmoothness = 0,
+                AnimationsSpeed = TimeSpan.FromMilliseconds(150),
+            },
+        ];
+
+        XAxes =
+        [
+            new Axis
+            {
+                Labeler = value => new DateTime((long)value).ToString("HH:mm:ss"),
+                UnitWidth = TimeSpan.FromSeconds(1).Ticks,
+                MinStep = TimeSpan.FromSeconds(10).Ticks,
+            },
+        ];
+
+        YAxes =
+        [
+            new Axis
+            {
+                Name = string.IsNullOrWhiteSpace(unit) ? "Value" : unit,
+                MinLimit = unit == "%" ? 0 : null,
+                MaxLimit = unit == "%" ? 100 : null,
+                Labeler = value => $"{value:F1}",
+            },
+        ];
     }
 
     public string Name { get; }
@@ -29,6 +69,16 @@ public partial class SensorRowViewModel : ViewModelBase
     public string Prefix => IsDevice ? "▾" : "↳";
 
     public string Unit { get; }
+
+    public bool CanGraph => !IsDevice;
+
+    public ObservableCollection<DateTimePoint> ChartValues { get; }
+
+    public IReadOnlyList<ISeries> Series { get; }
+
+    public IReadOnlyList<Axis> XAxes { get; }
+
+    public IReadOnlyList<Axis> YAxes { get; }
 
     [ObservableProperty]
     public partial string Current { get; set; } = "—";
@@ -44,6 +94,12 @@ public partial class SensorRowViewModel : ViewModelBase
         _currentValue = value;
         _minimumValue = _minimumValue.HasValue ? Math.Min(_minimumValue.Value, value) : value;
         _maximumValue = _maximumValue.HasValue ? Math.Max(_maximumValue.Value, value) : value;
+        ChartValues.Add(new DateTimePoint(DateTime.Now, value));
+        while (ChartValues.Count > MaximumChartPoints)
+        {
+            ChartValues.RemoveAt(0);
+        }
+
         UpdateDisplayValues();
     }
 

@@ -80,7 +80,13 @@
                     <ItemsControl ItemsSource="{Binding Sensors}">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate x:DataType="rows:SensorRowViewModel">
-                                <Border Padding="18,11" BorderBrush="#12FFFFFF" BorderThickness="0,0,0,1">
+                                <Border Padding="18,11"
+                                        BorderBrush="#12FFFFFF"
+                                        BorderThickness="0,0,0,1"
+                                        DoubleTapped="SensorRow_DoubleTapped">
+                                    <ToolTip.Tip>
+                                        <TextBlock Text="Double-click to open the live graph" />
+                                    </ToolTip.Tip>
                                     <Grid ColumnDefinitions="*,120,120,120,70">
                                         <Grid ColumnDefinitions="24,*">
                                             <TextBlock Text="{Binding Prefix}"

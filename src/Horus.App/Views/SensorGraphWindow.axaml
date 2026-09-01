@@ -1,0 +1,50 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Horus.App.ViewModels"
+        xmlns:lvc="using:LiveChartsCore.SkiaSharpView.Avalonia"
+        x:Class="Horus.App.Views.SensorGraphWindow"
+        x:DataType="vm:SensorRowViewModel"
+        Width="820"
+        Height="520"
+        MinWidth="600"
+        MinHeight="380"
+        Title="Sensor graph">
+
+    <Grid RowDefinitions="Auto,Auto,*" Margin="24">
+        <StackPanel Spacing="4">
+            <TextBlock Text="{Binding Name}" FontSize="24" FontWeight="SemiBold" />
+            <TextBlock Text="{Binding Description}" Opacity="0.6" />
+        </StackPanel>
+
+        <Grid Grid.Row="1" ColumnDefinitions="*,*,*" Margin="0,20,0,8">
+            <StackPanel>
+                <TextBlock Text="Current" Opacity="0.6" />
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                    <TextBlock Text="{Binding Current}" FontSize="22" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding Unit}" VerticalAlignment="Bottom" Margin="0,0,0,3" Opacity="0.6" />
+                </StackPanel>
+            </StackPanel>
+            <StackPanel Grid.Column="1">
+                <TextBlock Text="Minimum" Opacity="0.6" />
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                    <TextBlock Text="{Binding Minimum}" FontSize="22" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding Unit}" VerticalAlignment="Bottom" Margin="0,0,0,3" Opacity="0.6" />
+                </StackPanel>
+            </StackPanel>
+            <StackPanel Grid.Column="2">
+                <TextBlock Text="Maximum" Opacity="0.6" />
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                    <TextBlock Text="{Binding Maximum}" FontSize="22" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding Unit}" VerticalAlignment="Bottom" Margin="0,0,0,3" Opacity="0.6" />
+                </StackPanel>
+            </StackPanel>
+        </Grid>
+
+        <lvc:CartesianChart Grid.Row="2"
+                            Series="{Binding Series}"
+                            XAxes="{Binding XAxes}"
+                            YAxes="{Binding YAxes}"
+                            LegendPosition="Hidden"
+                            TooltipPosition="Top" />
+    </Grid>
+</Window>
