@@ -4,8 +4,8 @@
   "version": "0.2.0",
   "identifier": "com.isoplease.horus",
   "build": {
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "pnpm run dev",
+    "beforeBuildCommand": "pnpm run build",
     "devUrl": "http://localhost:1420",
     "frontendDist": "../dist"
   },
@@ -39,7 +39,16 @@
     }
   },
   "bundle": {
-    "active": false,
-    "icon": ["../src/Horus.App/Assets/avalonia-logo.ico"]
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "isoplease",
+    "shortDescription": "Real-time Windows system observatory",
+    "icon": ["../src/Horus.App/Assets/avalonia-logo.ico"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false
+      }
+    }
   }
 }

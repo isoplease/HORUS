@@ -162,6 +162,9 @@ fn main() {
     system.refresh_processes(ProcessesToUpdate::All, true);
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app);
+        }))
         .manage(TelemetryState {
             system: Mutex::new(system),
             networks: Mutex::new(Networks::new_with_refreshed_list()),
