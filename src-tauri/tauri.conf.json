@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "HORUS",
+  "version": "0.2.0",
+  "identifier": "com.isoplease.horus",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "HORUS Command Deck",
+        "width": 1180,
+        "height": 820,
+        "minWidth": 620,
+        "minHeight": 520,
+        "resizable": true,
+        "transparent": true,
+        "decorations": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "capabilities": ["default"],
+      "csp": {
+        "default-src": "'self' customprotocol: asset:",
+        "connect-src": "'self' ipc: http://ipc.localhost",
+        "img-src": "'self' asset: http://asset.localhost data:",
+        "object-src": "'none'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "base-uri": "'self'",
+        "frame-ancestors": "'none'"
+      }
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["../src/Horus.App/Assets/avalonia-logo.ico"]
+  }
+}

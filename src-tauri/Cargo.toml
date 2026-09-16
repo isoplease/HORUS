@@ -1,0 +1,19 @@
+[package]
+name = "horus"
+version = "0.2.0"
+description = "HORUS real-time Windows system observatory"
+authors = ["isoplease"]
+license = "MIT"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+sysinfo = { version = "0.39.6", default-features = true }
+tauri = { version = "2", features = ["tray-icon"] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
