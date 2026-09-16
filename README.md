@@ -24,28 +24,41 @@ The interface never fabricates telemetry. Browser preview mode shows unavailable
 
 Requirements:
 
-- Node.js 24+
+- Node.js 24+ and pnpm 11+
 - Rust stable toolchain
 - Microsoft WebView2 runtime
 - Windows 10 or Windows 11
 
 ```powershell
-npm install
-npm run tauri -- dev
+pnpm install
+pnpm run desktop:dev
 ```
 
 Frontend-only preview:
 
 ```powershell
-npm run dev
+pnpm run dev
 ```
 
 Production validation:
 
 ```powershell
-npm run build
+pnpm run build
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
+
+Windows installer:
+
+```powershell
+pnpm run desktop:build
+```
+
+The versioned NSIS installer is copied to the repository's `installer/` folder.
+The original bundle output remains under `src-tauri/target/release/bundle/nsis/`.
+After installation, HORUS can be launched from its Windows shortcut. Closing the
+window keeps HORUS in the system tray; double-click the tray icon or launch the
+shortcut again to bring the dashboard back. Use **Quit** in the tray menu to exit
+the application completely.
 
 ## Project layout
 
