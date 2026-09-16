@@ -1,38 +1,63 @@
-# HORUS
+# HORUS Command Deck
 
-HORUS is a modern, security-first Windows hardware monitor built with .NET 10 and Avalonia UI.
+HORUS is a modular Windows monitoring dashboard built with Tauri, React, TypeScript and Rust.
 
-## Current capabilities
+## Current prototype
 
-- Automatic CPU discovery through Windows WMI/CIM
-- Live total and per-logical-processor load readings
-- Session minimum and maximum tracking
-- Rolling 60-second live graph for any selected sensor
-- Persistent user settings
-- Optional per-user startup with Windows
-- English-only user interface
+- Live CPU and per-logical-processor utilization
+- Live memory and swap utilization
+- Disk capacity overview
+- Network receive/transmit activity
+- Top process CPU and memory usage
+- Responsive half-screen dashboard
+- Drag-and-drop card ordering
+- Four card size presets
+- Per-card visibility controls
+- Persistent layout and appearance settings
+- Custom colors, opacity, glow, radius and grid spacing
+- Optional Windows frame with custom frameless controls
+- Windows Event Log card prepared for the native event watcher
 
-## Security principles
-
-- User-mode data collection is the default.
-- Windows APIs, PDH/Performance Counters, WMI/CIM, ETW, and official GPU vendor APIs are preferred.
-- Privileged services are optional and isolated from the desktop application.
-- Any future kernel driver must expose narrowly scoped operations, support HVCI, and follow Microsoft's signing and certification process.
-- HORUS never displays fabricated sensor readings. Unsupported measurements are shown as unavailable.
+The interface never fabricates telemetry. Browser preview mode shows unavailable values until the Tauri desktop runtime is connected.
 
 ## Development
 
 Requirements:
 
-- .NET SDK 10
+- Node.js 24+
+- Rust stable toolchain
+- Microsoft WebView2 runtime
 - Windows 10 or Windows 11
 
 ```powershell
-dotnet restore HORUS.slnx
-dotnet build HORUS.slnx
-dotnet run --project src/Horus.App/Horus.App.csproj
+npm install
+npm run tauri -- dev
 ```
 
-## Status
+Frontend-only preview:
 
-HORUS is in early development. CPU load monitoring and live sensor graphs are functional; additional hardware providers and tray sensor support are planned.
+```powershell
+npm run dev
+```
+
+Production validation:
+
+```powershell
+npm run build
+cargo check --manifest-path src-tauri/Cargo.toml
+```
+
+## Project layout
+
+- `ui/`: React dashboard and theme system
+- `src-tauri/`: Rust desktop shell and native telemetry
+- `src/Horus.App/`: preserved Avalonia prototype; scheduled for removal after migration validation
+- `tests/Horus.App.Tests/`: tests belonging to the preserved prototype
+
+## Next modules
+
+1. Windows Event Log live watcher and severity filters
+2. Process start/stop flow with resource-spike detection
+3. GPU telemetry providers
+4. Card-level chart and alert customization
+5. Saved dashboard profiles and installer packaging
