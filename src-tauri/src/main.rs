@@ -155,6 +155,20 @@ fn hide_main_window(app: &tauri::AppHandle) {
     }
 }
 
+#[tauri::command]
+fn set_window_frame(window: tauri::WebviewWindow, decorations: bool) -> Result<(), String> {
+    window
+        .set_decorations(decorations)
+        .map_err(|error| error.to_string())?;
+    window
+        .set_shadow(decorations)
+        .map_err(|error| error.to_string())?;
+    window
+        .set_resizable(true)
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 fn main() {
     let mut system = System::new_all();
     std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
@@ -170,7 +184,7 @@ fn main() {
             networks: Mutex::new(Networks::new_with_refreshed_list()),
             disks: Mutex::new(Disks::new_with_refreshed_list()),
         })
-        .invoke_handler(tauri::generate_handler![get_system_snapshot])
+        .invoke_handler(tauri::generate_handler![get_system_snapshot, set_window_frame])
         .setup(|app| {
             let show_item = MenuItem::with_id(app, "show", "Open HORUS", true, None::<&str>)?;
             let hide_item = MenuItem::with_id(app, "hide", "Hide", true, None::<&str>)?;

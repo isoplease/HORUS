@@ -1,6 +1,3 @@
-export type CardId = 'pulse' | 'cpu' | 'memory' | 'processes' | 'disks' | 'network' | 'events';
-export type CardSize = 'compact' | 'standard' | 'wide' | 'tall';
-
 export interface ProcessSample {
   pid: number;
   name: string;
@@ -38,6 +35,7 @@ export interface SystemSnapshot {
 
 export interface ThemeSettings {
   background: string;
+  backgroundTransparency: number;
   card: string;
   heading: string;
   info: string;
