@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "HORUS",
-  "version": "0.2.0",
+  "version": "0.2.3",
   "identifier": "com.isoplease.horus",
   "build": {
     "beforeDevCommand": "pnpm run dev",
@@ -14,10 +14,10 @@
       {
         "label": "main",
         "title": "HORUS Command Deck",
-        "width": 1180,
-        "height": 820,
-        "minWidth": 620,
-        "minHeight": 520,
+        "width": 1260,
+        "height": 840,
+        "minWidth": 760,
+        "minHeight": 560,
         "resizable": true,
         "transparent": true,
         "decorations": true,
