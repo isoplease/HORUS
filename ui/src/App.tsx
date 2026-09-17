@@ -10,6 +10,8 @@ import type { EventKind, SystemSnapshot, ThemeSettings, WindowsEventRecord } fro
 const THEME_KEY = 'horus-theme-v1';
 const FRAME_KEY = 'horus-window-frame-v1';
 const AUTOSTART_INITIALIZED_KEY = 'horus-autostart-initialized-v1';
+const HOST_SPECS_KEY = 'horus-host-specs-visible-v1';
+const SETTINGS_BLUR_KEY = 'horus-settings-backdrop-blur-v1';
 
 const DEFAULT_THEME: ThemeSettings = {
   background: '#050c14', backgroundTransparency: 18, card: '#0a1b2b', heading: '#eaf8ff', info: '#86a4b7', accent: '#20c9f4', chart: '#35e2c2', warning: '#ffbd59', critical: '#ff5577', cardOpacity: 92, glow: 34, radius: 10, gap: 10,
@@ -74,15 +76,40 @@ function BinaryClock({ time }: { time: Date }) {
   </div>;
 }
 
-interface SettingsPanelProps { open: boolean; onClose: () => void; theme: ThemeSettings; setTheme: (value: ThemeSettings) => void; decorations: boolean; setDecorations: (value: boolean) => void; autostart: boolean; autostartBusy: boolean; onAutostartChange: (value: boolean) => void; }
-function SettingsPanel({ open, onClose, theme, setTheme, decorations, setDecorations, autostart, autostartBusy, onAutostartChange }: SettingsPanelProps) {
+function EyeIcon({ crossed = false }: { crossed?: boolean }) {
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" /><circle cx="12" cy="12" r="2.5" />{crossed && <path d="m4 4 16 16" />}</svg>;
+}
+
+function WindowControlIcon({ type }: { type: 'minimize' | 'maximize' | 'hide' }) {
+  if (type === 'minimize') return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 14h14" /><path className="icon-accent" d="M8 17h8" /></svg>;
+  if (type === 'maximize') return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5H5v4M15 5h4v4M5 15v4h4M19 15v4h-4" /><path className="icon-accent" d="M9 9h6v6H9z" /></svg>;
+  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17" /><path className="icon-accent" d="M12 3.5 20.5 12 12 20.5 3.5 12 12 3.5Z" /></svg>;
+}
+
+function HostHardware({ snapshot, visible, time, onToggle }: { snapshot: SystemSnapshot | null; visible: boolean; time: Date; onToggle: () => void }) {
+  const memory = snapshot ? formatBytes(snapshot.totalMemoryBytes, 0) : '—';
+  const videoMemory = snapshot?.gpuMemoryBytes ? formatBytes(snapshot.gpuMemoryBytes, 0) : '—';
+  return <>
+    <div className="host-side">
+      <div className="host-specs-title"><span>SYSTEM SPECS</span><button className="specs-visibility" onClick={onToggle} title={visible ? 'Hide system specs' : 'Show system specs'} aria-label={visible ? 'Hide system specs' : 'Show system specs'}><EyeIcon crossed={!visible} /></button></div>
+      {visible && <div className="host-specs">
+      <p title={snapshot?.cpuModel}>{snapshot?.cpuModel ?? 'CPU telemetry pending'} <b>· RAM {memory}</b></p>
+      <p title={snapshot?.gpuModel}>{snapshot?.gpuModel ?? 'GPU telemetry pending'} <b>· VRAM {videoMemory}</b></p>
+      </div>}
+    </div>
+    <BinaryClock time={time} />
+  </>;
+}
+
+interface SettingsPanelProps { open: boolean; onClose: () => void; theme: ThemeSettings; setTheme: (value: ThemeSettings) => void; decorations: boolean; setDecorations: (value: boolean) => void; settingsBlur: boolean; setSettingsBlur: (value: boolean) => void; autostart: boolean; autostartBusy: boolean; onAutostartChange: (value: boolean) => void; }
+function SettingsPanel({ open, onClose, theme, setTheme, decorations, setDecorations, settingsBlur, setSettingsBlur, autostart, autostartBusy, onAutostartChange }: SettingsPanelProps) {
   const update = <K extends keyof ThemeSettings>(key: K, value: ThemeSettings[K]) => setTheme({ ...theme, [key]: value });
   const colors: Array<[keyof ThemeSettings, string]> = [['background', 'Background'], ['card', 'Surface'], ['heading', 'Headings'], ['info', 'Info text'], ['accent', 'Accent'], ['chart', 'Charts'], ['warning', 'Warnings'], ['critical', 'Critical']];
   return <aside className={`settings-panel ${open ? 'is-open' : ''}`} aria-hidden={!open}>
     <div className="settings-title"><div><span className="eyebrow">CONTROL / APPEARANCE</span><h2>Interface Matrix</h2></div><button className="icon-button" onClick={onClose}>×</button></div>
     <section><h3>Color channels</h3><div className="color-grid">{colors.map(([key, label]) => <label key={key}><span>{label}</span><input type="color" value={String(theme[key])} onChange={(event) => update(key, event.target.value as never)} /></label>)}</div></section>
     <section className="range-stack"><h3>Surface density</h3><label className={decorations ? 'is-disabled' : ''}><span>Background transparency <output>{theme.backgroundTransparency}%</output></span><input type="range" min="0" max="70" value={theme.backgroundTransparency} disabled={decorations} onChange={(event) => update('backgroundTransparency', Number(event.target.value))} /></label><label><span>Surface opacity <output>{theme.cardOpacity}%</output></span><input type="range" min="55" max="100" value={theme.cardOpacity} onChange={(event) => update('cardOpacity', Number(event.target.value))} /></label><label><span>Glow intensity <output>{theme.glow}%</output></span><input type="range" min="0" max="100" value={theme.glow} onChange={(event) => update('glow', Number(event.target.value))} /></label><label><span>Corner radius <output>{theme.radius}px</output></span><input type="range" min="0" max="20" value={theme.radius} onChange={(event) => update('radius', Number(event.target.value))} /></label></section>
-    <section className="module-toggles"><h3>Window</h3><label><span>Start with Windows</span><input type="checkbox" checked={autostart} disabled={autostartBusy} onChange={(event) => onAutostartChange(event.target.checked)} /></label><label><span>Windows frame</span><input type="checkbox" checked={decorations} onChange={(event) => setDecorations(event.target.checked)} /></label></section>
+    <section className="module-toggles"><h3>Window</h3><label><span>Start with Windows</span><input type="checkbox" checked={autostart} disabled={autostartBusy} onChange={(event) => onAutostartChange(event.target.checked)} /></label><label><span>Windows frame</span><input type="checkbox" checked={decorations} onChange={(event) => setDecorations(event.target.checked)} /></label><label><span>Control Matrix background blur</span><input type="checkbox" checked={settingsBlur} onChange={(event) => setSettingsBlur(event.target.checked)} /></label></section>
     <div className="settings-actions"><button onClick={() => setTheme(DEFAULT_THEME)}>Reset theme</button></div>
   </aside>;
 }
@@ -94,6 +121,7 @@ function App() {
   const [theme, setTheme] = useState<ThemeSettings>(() => loadJson(THEME_KEY, DEFAULT_THEME));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [decorations, setDecorations] = useState(() => localStorage.getItem(FRAME_KEY) !== 'false');
+  const [settingsBlur, setSettingsBlur] = useState(() => localStorage.getItem(SETTINGS_BLUR_KEY) !== 'false');
   const [autostart, setAutostart] = useState(false);
   const [autostartBusy, setAutostartBusy] = useState(false);
   const [eventFilter, setEventFilter] = useState<EventKind>('warning');
@@ -104,6 +132,7 @@ function App() {
   const [updatePhase, setUpdatePhase] = useState<UpdatePhase>('idle');
   const [updateProgress, setUpdateProgress] = useState(0);
   const [eventTooltip, setEventTooltip] = useState<EventTooltip | null>(null);
+  const [hostSpecsVisible, setHostSpecsVisible] = useState(() => localStorage.getItem(HOST_SPECS_KEY) !== 'false');
 
   useEffect(() => {
     const root = document.documentElement;
@@ -113,6 +142,8 @@ function App() {
   }, [decorations, theme]);
 
   useEffect(() => { localStorage.setItem(FRAME_KEY, String(decorations)); if (isTauriRuntime()) void invoke('set_window_frame', { decorations }).catch((error) => console.error('Window frame could not be updated:', error)); }, [decorations]);
+  useEffect(() => { localStorage.setItem(SETTINGS_BLUR_KEY, String(settingsBlur)); }, [settingsBlur]);
+  useEffect(() => { localStorage.setItem(HOST_SPECS_KEY, String(hostSpecsVisible)); }, [hostSpecsVisible]);
   useEffect(() => {
     if (!isTauriRuntime()) return;
     void isAutostartEnabled().then(async (enabled) => {
@@ -231,11 +262,11 @@ function App() {
   };
 
   return <div className={`app-shell ${decorations ? '' : 'frameless'}`}>
-    {!decorations && <>{RESIZE_HANDLES.map(([direction, className]) => <div key={direction} className={className} onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startResizeDragging(direction); }} />)}<div className="window-chrome"><div className="window-brand"><img src="/teoh-alt1.png" alt="" /></div><button className="drag-zone" onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startDragging(); }}>HORUS // COMMAND DECK</button><button onClick={() => isTauriRuntime() && void getCurrentWindow().minimize()}>—</button><button onClick={() => isTauriRuntime() && void getCurrentWindow().toggleMaximize()}>□</button><button className="close-window" onClick={() => isTauriRuntime() && void getCurrentWindow().hide()}>×</button></div></>}
+    {!decorations && <>{RESIZE_HANDLES.map(([direction, className]) => <div key={direction} className={className} onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startResizeDragging(direction); }} />)}<div className="window-chrome"><button className="drag-zone" aria-label="Move window" onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startDragging(); }}><img src="/hieroglyphics.png" alt="" /></button><div className="window-controls"><button className="chrome-action minimize-window" onClick={() => isTauriRuntime() && void getCurrentWindow().minimize()} aria-label="Minimize window" title="Minimize"><WindowControlIcon type="minimize" /></button><button className="chrome-action maximize-window" onClick={() => isTauriRuntime() && void getCurrentWindow().toggleMaximize()} aria-label="Maximize window" title="Maximize"><WindowControlIcon type="maximize" /></button><button className="chrome-action close-window" onClick={() => isTauriRuntime() && void getCurrentWindow().hide()} aria-label="Hide window" title="Hide"><WindowControlIcon type="hide" /></button></div></div></>}
     <div className="ambient-grid" />
-    <header className="topbar"><div className="brand-block"><div><span className="eyebrow">REAL-TIME SYSTEM OBSERVATORY</span><h1>HORUS</h1></div></div><div className="topbar-status"><div><span className={`live-dot ${snapshot ? 'online' : ''}`} />{snapshot ? 'TELEMETRY ONLINE' : 'TELEMETRY STANDBY'}</div><time>{new Date(snapshot?.timestampMs ?? Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time><button className="settings-trigger" onClick={() => setSettingsOpen(true)}>CONTROL MATRIX</button></div></header>
+    <header className="topbar"><div className="brand-block"><div className="brand-mark" tabIndex={0} aria-describedby="brand-origin"><img className="brand-icon" src="/teoh-alt02-transparent.png" alt="HORUS emblem" /><div className="brand-popover" id="brand-origin" role="tooltip"><img src="/teoh-alt02-transparent.png" alt="" /><p>It was made on Earth by two entitiy named İsmail and Codex</p></div></div><div className="brand-copy"><h1>HORUS</h1><span className="eyebrow">REAL-TIME SYSTEM OBSERVATORY</span></div></div><div className="topbar-status"><div><span className={`live-dot ${snapshot ? 'online' : ''}`} />{snapshot ? 'TELEMETRY ONLINE' : 'TELEMETRY STANDBY'}</div><time>{new Date(snapshot?.timestampMs ?? Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time><button className="settings-trigger" onClick={() => setSettingsOpen(true)}>CONTROL MATRIX</button></div></header>
     <main>
-      <section className="pulse-ribbon"><div className="pulse-title"><span className={`pulse-beacon ${snapshot ? 'online' : ''}`} /><div><span>SYSTEM PULSE</span><strong>{snapshot ? 'NOMINAL' : 'STANDBY'}</strong></div></div><div className="pulse-reading host"><div className="host-copy"><span>HOST</span><strong>{snapshot?.hostName ?? '—'}</strong><small>{snapshot?.operatingSystem ?? telemetryError ?? 'Awaiting native runtime'}</small></div><BinaryClock time={clockTime} /></div><div className="pulse-reading"><span>UPTIME</span><strong>{snapshot ? formatUptime(snapshot.uptimeSeconds) : '—'}</strong><small>{snapshot?.processCount ?? 0} active processes</small></div><div className="pulse-reading"><span>SYSTEM LOAD</span><strong>{snapshot ? `${snapshot.cpuPercent.toFixed(0)}%` : '—'}</strong><small>{snapshot?.logicalCpuCount ?? 0} logical processors</small></div></section>
+      <section className="pulse-ribbon"><div className="pulse-title"><span className={`pulse-beacon ${snapshot ? 'online' : ''}`} /><div><span>SYSTEM PULSE</span><strong>{snapshot ? 'NOMINAL' : 'STANDBY'}</strong></div></div><div className="pulse-reading host"><div className="host-copy"><span>HOST</span><strong>{snapshot?.hostName ?? '—'}</strong><small>{snapshot?.operatingSystem ?? telemetryError ?? 'Awaiting native runtime'}</small></div><HostHardware snapshot={snapshot} visible={hostSpecsVisible} time={clockTime} onToggle={() => setHostSpecsVisible((visible) => !visible)} /></div><div className="pulse-reading"><span>UPTIME</span><strong>{snapshot ? formatUptime(snapshot.uptimeSeconds) : '—'}</strong><small>{snapshot?.processCount ?? 0} active processes</small></div><div className="pulse-reading"><span>SYSTEM LOAD</span><strong>{snapshot ? `${snapshot.cpuPercent.toFixed(0)}%` : '—'}</strong><small>{snapshot?.logicalCpuCount ?? 0} logical processors</small></div></section>
       <section className="command-surface">
         <div className="performance-grid">
           <section className="module cpu-module"><ModuleHeader code="PERF / 01" title="CPU Matrix" meta={<span>{snapshot?.logicalCpuCount ?? 0} CORES</span>} /><div className="cpu-layout"><MetricRing value={snapshot?.cpuPercent ?? 0} label="TOTAL LOAD" /><div className="cpu-detail"><strong>{snapshot ? `${snapshot.cpuPercent.toFixed(1)}%` : '—'}</strong><span>aggregate utilization</span><div className="core-grid">{(snapshot?.perCpuPercent ?? []).slice(0, 16).map((value, index) => <i key={index} title={`CPU ${index + 1}: ${value.toFixed(0)}%`} style={{ '--core-load': `${value}%` } as CSSProperties} />)}</div></div><Sparkline values={history} /></div></section>
@@ -253,8 +284,8 @@ function App() {
     </main>
     <footer><span>HORUS NATIVE TELEMETRY BUS</span><div className="footer-status"><button className={`update-trigger ${updatePhase === 'available' ? 'has-update' : ''}`} onClick={() => void handleUpdate()} disabled={updatePhase === 'checking' || updatePhase === 'downloading' || updatePhase === 'installing'}>{updateLabel}</button><span>{snapshot ? `LAST SAMPLE ${new Date(snapshot.timestampMs).toLocaleTimeString()}` : 'NO NATIVE SAMPLE'}</span></div></footer>
     {eventTooltip && <aside className={`event-tooltip ${eventTooltip.above ? 'above' : ''}`} style={{ top: eventTooltip.top, left: eventTooltip.left, width: eventTooltip.width }} role="tooltip"><div><span>{eventTooltip.record.kind.toUpperCase()}</span><time>{new Date(eventTooltip.record.timestamp).toLocaleString()}</time></div><strong>{eventTooltip.record.source}</strong><p>{eventTooltip.record.message}</p></aside>}
-    {settingsOpen && <button className="settings-backdrop" aria-label="Close settings" onClick={() => setSettingsOpen(false)} />}
-    <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} theme={theme} setTheme={setTheme} decorations={decorations} setDecorations={setDecorations} autostart={autostart} autostartBusy={autostartBusy} onAutostartChange={(enabled) => void handleAutostartChange(enabled)} />
+    {settingsOpen && <button className={`settings-backdrop ${settingsBlur ? 'is-blurred' : ''}`} aria-label="Close settings" onClick={() => setSettingsOpen(false)} />}
+    <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} theme={theme} setTheme={setTheme} decorations={decorations} setDecorations={setDecorations} settingsBlur={settingsBlur} setSettingsBlur={setSettingsBlur} autostart={autostart} autostartBusy={autostartBusy} onAutostartChange={(enabled) => void handleAutostartChange(enabled)} />
   </div>;
 }
 

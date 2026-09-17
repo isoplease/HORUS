@@ -20,6 +20,14 @@ struct TelemetryState {
     system: Mutex<System>,
     networks: Mutex<Networks>,
     disks: Mutex<Disks>,
+    hardware: HardwareInfo,
+}
+
+#[derive(Clone)]
+struct HardwareInfo {
+    cpu_model: String,
+    gpu_model: String,
+    gpu_memory_bytes: u64,
 }
 
 #[derive(Serialize)]
@@ -62,6 +70,9 @@ struct SystemSnapshot {
     cpu_percent: f32,
     logical_cpu_count: usize,
     per_cpu_percent: Vec<f32>,
+    cpu_model: String,
+    gpu_model: String,
+    gpu_memory_bytes: u64,
     total_memory_bytes: u64,
     used_memory_bytes: u64,
     total_swap_bytes: u64,
@@ -143,6 +154,9 @@ fn get_system_snapshot(state: tauri::State<'_, TelemetryState>) -> Result<System
         cpu_percent: system.global_cpu_usage().clamp(0.0, 100.0),
         logical_cpu_count,
         per_cpu_percent: system.cpus().iter().map(|cpu| cpu.cpu_usage()).collect(),
+        cpu_model: state.hardware.cpu_model.clone(),
+        gpu_model: state.hardware.gpu_model.clone(),
+        gpu_memory_bytes: state.hardware.gpu_memory_bytes,
         total_memory_bytes: system.total_memory(),
         used_memory_bytes: system.used_memory(),
         total_swap_bytes: system.total_swap(),
@@ -153,6 +167,40 @@ fn get_system_snapshot(state: tauri::State<'_, TelemetryState>) -> Result<System
         top_processes,
         disks: disk_samples,
     })
+}
+
+fn parse_gpu_info(value: &str) -> Option<(String, u64)> {
+    let mut fields = value.trim().splitn(2, '\t');
+    let name = fields.next()?.trim();
+    let memory = fields.next()?.trim().parse::<u64>().ok()?;
+    (!name.is_empty()).then(|| (name.to_string(), memory))
+}
+
+#[cfg(windows)]
+fn query_windows_gpu() -> (String, u64) {
+    let Some(system_root) = std::env::var_os("SystemRoot").map(PathBuf::from) else {
+        return ("Unknown GPU".to_string(), 0);
+    };
+    let executable = system_root
+        .join("System32")
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe");
+    let script = r#"$OutputEncoding=[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $items=Get-ChildItem -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}' -ErrorAction SilentlyContinue | ForEach-Object { $p=Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue; $m=$p.PSObject.Properties['HardwareInformation.qwMemorySize']; if($p.DriverDesc){ [PSCustomObject]@{Name=[string]$p.DriverDesc; Memory=if($m){[uint64]$m.Value}else{[uint64]0}} } }; $gpu=$items | Sort-Object Memory -Descending | Select-Object -First 1; if($gpu){ Write-Output ($gpu.Name + [char]9 + $gpu.Memory) }"#;
+    let mut command = Command::new(executable);
+    command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    command
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| parse_gpu_info(&String::from_utf8_lossy(&output.stdout)))
+        .unwrap_or_else(|| ("Unknown GPU".to_string(), 0))
+}
+
+#[cfg(not(windows))]
+fn query_windows_gpu() -> (String, u64) {
+    ("Unknown GPU".to_string(), 0)
 }
 
 fn decode_utf16_le(bytes: &[u8]) -> Result<String, String> {
@@ -315,6 +363,14 @@ mod tests {
 
         assert_eq!(decode_utf16_le(&bytes).unwrap(), "<Event>ok</Event>");
     }
+
+    #[test]
+    fn parses_gpu_hardware_output() {
+        assert_eq!(
+            parse_gpu_info("NVIDIA GeForce RTX 3080\t10737418240\r\n"),
+            Some(("NVIDIA GeForce RTX 3080".to_string(), 10_737_418_240))
+        );
+    }
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
@@ -350,6 +406,13 @@ fn main() {
     std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
     system.refresh_cpu_usage();
     system.refresh_processes(ProcessesToUpdate::All, true);
+    let cpu_model = system
+        .cpus()
+        .first()
+        .map(|cpu| cpu.brand().trim().to_string())
+        .filter(|model| !model.is_empty())
+        .unwrap_or_else(|| "Unknown CPU".to_string());
+    let (gpu_model, gpu_memory_bytes) = query_windows_gpu();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
@@ -373,6 +436,11 @@ fn main() {
             system: Mutex::new(system),
             networks: Mutex::new(Networks::new_with_refreshed_list()),
             disks: Mutex::new(Disks::new_with_refreshed_list()),
+            hardware: HardwareInfo {
+                cpu_model,
+                gpu_model,
+                gpu_memory_bytes,
+            },
         })
         .invoke_handler(tauri::generate_handler![
             get_system_snapshot,
