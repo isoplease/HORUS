@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "HORUS",
-  "version": "0.2.3",
+  "version": "0.2.12",
   "identifier": "com.isoplease.horus",
   "build": {
     "beforeDevCommand": "pnpm run dev",
@@ -40,14 +40,33 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["nsis"],
     "publisher": "isoplease",
     "shortDescription": "Real-time Windows system observatory",
-    "icon": ["../src/Horus.App/Assets/avalonia-logo.ico"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
     "windows": {
       "nsis": {
         "installMode": "currentUser",
-        "displayLanguageSelector": false
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ1OTcyNzhCNTc4MzZCNApSV1MwTm5pMWVISlpCSjZDTzI4YnZWb1h2TnhQcWVWai8xUEtYL0V3MEhob0NrdEJEUFh5UXIxZgo=",
+      "endpoints": [
+        "https://github.com/isoplease/HORUS/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }
