@@ -32,6 +32,9 @@ export interface SystemSnapshot {
   cpuPercent: number;
   logicalCpuCount: number;
   perCpuPercent: number[];
+  cpuModel: string;
+  gpuModel: string;
+  gpuMemoryBytes: number;
   totalMemoryBytes: number;
   usedMemoryBytes: number;
   totalSwapBytes: number;
