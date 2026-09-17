@@ -14,6 +14,16 @@ export interface DiskSample {
   availableBytes: number;
 }
 
+export type EventKind = 'critical' | 'error' | 'warning' | 'application';
+
+export interface WindowsEventRecord {
+  id: string;
+  kind: EventKind;
+  source: string;
+  message: string;
+  timestamp: string;
+}
+
 export interface SystemSnapshot {
   timestampMs: number;
   hostName: string;

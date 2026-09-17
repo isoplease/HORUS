@@ -54,6 +54,17 @@ pnpm run desktop:build
 ```
 
 The versioned NSIS installer is copied to the repository's `installer/` folder.
+The build also creates the updater signature and `latest.json`. Publish all three
+files in a GitHub Release tagged `v<version>` so installed clients can discover,
+verify and apply the update in place:
+
+- `HORUS_<version>_x64-setup.exe`
+- `HORUS_<version>_x64-setup.exe.sig`
+- `latest.json`
+
+Updater signing credentials are kept outside the repository in the current
+Windows user's `.tauri` directory and are protected with Windows DPAPI. Back up
+the private key securely; future releases must use the same updater key.
 The original bundle output remains under `src-tauri/target/release/bundle/nsis/`.
 After installation, HORUS can be launched from its Windows shortcut. Closing the
 window keeps HORUS in the system tray; double-click the tray icon or launch the
@@ -69,8 +80,7 @@ the application completely.
 
 ## Next modules
 
-1. Windows Event Log live watcher and severity filters
-2. Process start/stop flow with resource-spike detection
-3. GPU telemetry providers
-4. Card-level chart and alert customization
-5. Saved dashboard profiles and installer packaging
+1. Process start/stop flow with resource-spike detection
+2. GPU telemetry providers
+3. Card-level chart and alert customization
+4. Saved dashboard profiles

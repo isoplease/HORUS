@@ -1,0 +1,11 @@
+{
+    "version":  "0.2.12",
+    "notes":  "HORUS v0.2.12",
+    "pub_date":  "2026-09-17T12:06:37.2066629Z",
+    "platforms":  {
+                      "windows-x86_64":  {
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTME5uaTFlSEpaQk5zU01VcFV3T0NjNHNkc3o4cVhja1hyM1lVUmQ4eFpNeVVHZ3BZN0lEaHFaU0NweW5weGJYZUpPZlpvbUdzcHdqNkw2MjlGUE1BMzNzQ1pndE9HMHdrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5NjQ2Nzg2CWZpbGU6SE9SVVNfMC4yLjEyX3g2NC1zZXR1cC5leGUKcGQ0dzEvSHRqMTdaUWJmT0VSSU5yRjZ5U3R6akwxK2RRWkgxdm0xVDZaZDQ2NndwZjVCMURleGxXSDQ0dU56Q1hmUE9OMnU0RHkrMCtrQTl4WlBLQnc9PQo=",
+                                             "url":  "https://github.com/isoplease/HORUS/releases/download/v0.2.12/HORUS_0.2.12_x64-setup.exe"
+                                         }
+                  }
+}
