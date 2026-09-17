@@ -2,12 +2,14 @@ import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { disable as disableAutostart, enable as enableAutostart, isEnabled as isAutostartEnabled } from '@tauri-apps/plugin-autostart';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { getSystemSnapshot, getWindowsEvents, isTauriRuntime } from './telemetry';
 import type { EventKind, SystemSnapshot, ThemeSettings, WindowsEventRecord } from './types';
 
 const THEME_KEY = 'horus-theme-v1';
 const FRAME_KEY = 'horus-window-frame-v1';
+const AUTOSTART_INITIALIZED_KEY = 'horus-autostart-initialized-v1';
 
 const DEFAULT_THEME: ThemeSettings = {
   background: '#050c14', backgroundTransparency: 18, card: '#0a1b2b', heading: '#eaf8ff', info: '#86a4b7', accent: '#20c9f4', chart: '#35e2c2', warning: '#ffbd59', critical: '#ff5577', cardOpacity: 92, glow: 34, radius: 10, gap: 10,
@@ -72,15 +74,15 @@ function BinaryClock({ time }: { time: Date }) {
   </div>;
 }
 
-interface SettingsPanelProps { open: boolean; onClose: () => void; theme: ThemeSettings; setTheme: (value: ThemeSettings) => void; decorations: boolean; setDecorations: (value: boolean) => void; }
-function SettingsPanel({ open, onClose, theme, setTheme, decorations, setDecorations }: SettingsPanelProps) {
+interface SettingsPanelProps { open: boolean; onClose: () => void; theme: ThemeSettings; setTheme: (value: ThemeSettings) => void; decorations: boolean; setDecorations: (value: boolean) => void; autostart: boolean; autostartBusy: boolean; onAutostartChange: (value: boolean) => void; }
+function SettingsPanel({ open, onClose, theme, setTheme, decorations, setDecorations, autostart, autostartBusy, onAutostartChange }: SettingsPanelProps) {
   const update = <K extends keyof ThemeSettings>(key: K, value: ThemeSettings[K]) => setTheme({ ...theme, [key]: value });
   const colors: Array<[keyof ThemeSettings, string]> = [['background', 'Background'], ['card', 'Surface'], ['heading', 'Headings'], ['info', 'Info text'], ['accent', 'Accent'], ['chart', 'Charts'], ['warning', 'Warnings'], ['critical', 'Critical']];
   return <aside className={`settings-panel ${open ? 'is-open' : ''}`} aria-hidden={!open}>
     <div className="settings-title"><div><span className="eyebrow">CONTROL / APPEARANCE</span><h2>Interface Matrix</h2></div><button className="icon-button" onClick={onClose}>×</button></div>
     <section><h3>Color channels</h3><div className="color-grid">{colors.map(([key, label]) => <label key={key}><span>{label}</span><input type="color" value={String(theme[key])} onChange={(event) => update(key, event.target.value as never)} /></label>)}</div></section>
     <section className="range-stack"><h3>Surface density</h3><label className={decorations ? 'is-disabled' : ''}><span>Background transparency <output>{theme.backgroundTransparency}%</output></span><input type="range" min="0" max="70" value={theme.backgroundTransparency} disabled={decorations} onChange={(event) => update('backgroundTransparency', Number(event.target.value))} /></label><label><span>Surface opacity <output>{theme.cardOpacity}%</output></span><input type="range" min="55" max="100" value={theme.cardOpacity} onChange={(event) => update('cardOpacity', Number(event.target.value))} /></label><label><span>Glow intensity <output>{theme.glow}%</output></span><input type="range" min="0" max="100" value={theme.glow} onChange={(event) => update('glow', Number(event.target.value))} /></label><label><span>Corner radius <output>{theme.radius}px</output></span><input type="range" min="0" max="20" value={theme.radius} onChange={(event) => update('radius', Number(event.target.value))} /></label></section>
-    <section className="module-toggles"><h3>Window</h3><label><span>Windows frame</span><input type="checkbox" checked={decorations} onChange={(event) => setDecorations(event.target.checked)} /></label></section>
+    <section className="module-toggles"><h3>Window</h3><label><span>Start with Windows</span><input type="checkbox" checked={autostart} disabled={autostartBusy} onChange={(event) => onAutostartChange(event.target.checked)} /></label><label><span>Windows frame</span><input type="checkbox" checked={decorations} onChange={(event) => setDecorations(event.target.checked)} /></label></section>
     <div className="settings-actions"><button onClick={() => setTheme(DEFAULT_THEME)}>Reset theme</button></div>
   </aside>;
 }
@@ -92,6 +94,8 @@ function App() {
   const [theme, setTheme] = useState<ThemeSettings>(() => loadJson(THEME_KEY, DEFAULT_THEME));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [decorations, setDecorations] = useState(() => localStorage.getItem(FRAME_KEY) !== 'false');
+  const [autostart, setAutostart] = useState(false);
+  const [autostartBusy, setAutostartBusy] = useState(false);
   const [eventFilter, setEventFilter] = useState<EventKind>('warning');
   const [events, setEvents] = useState<WindowsEventRecord[]>([]);
   const [clockTime, setClockTime] = useState(() => new Date());
@@ -109,6 +113,17 @@ function App() {
   }, [decorations, theme]);
 
   useEffect(() => { localStorage.setItem(FRAME_KEY, String(decorations)); if (isTauriRuntime()) void invoke('set_window_frame', { decorations }).catch((error) => console.error('Window frame could not be updated:', error)); }, [decorations]);
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    void isAutostartEnabled().then(async (enabled) => {
+      if (!enabled && localStorage.getItem(AUTOSTART_INITIALIZED_KEY) !== 'true') {
+        await enableAutostart();
+        enabled = true;
+      }
+      localStorage.setItem(AUTOSTART_INITIALIZED_KEY, 'true');
+      setAutostart(enabled);
+    }).catch((error) => console.error('Autostart state could not be read:', error));
+  }, []);
   useEffect(() => {
     const timer = window.setInterval(() => setClockTime(new Date()), 1_000);
     if (isTauriRuntime()) void getVersion().then(setAppVersion).catch((error) => console.error('App version could not be read:', error));
@@ -191,6 +206,22 @@ function App() {
     }
   };
 
+  const handleAutostartChange = async (enabled: boolean) => {
+    if (!isTauriRuntime() || autostartBusy) return;
+    setAutostartBusy(true);
+    try {
+      if (enabled) await enableAutostart();
+      else await disableAutostart();
+      localStorage.setItem(AUTOSTART_INITIALIZED_KEY, 'true');
+      setAutostart(await isAutostartEnabled());
+    } catch (error) {
+      console.error('Autostart setting could not be updated:', error);
+      setAutostart(await isAutostartEnabled().catch(() => autostart));
+    } finally {
+      setAutostartBusy(false);
+    }
+  };
+
   const showEventTooltip = (target: HTMLElement, record: WindowsEventRecord) => {
     const rect = target.getBoundingClientRect();
     const width = Math.min(440, window.innerWidth - 24);
@@ -200,7 +231,7 @@ function App() {
   };
 
   return <div className={`app-shell ${decorations ? '' : 'frameless'}`}>
-    {!decorations && <>{RESIZE_HANDLES.map(([direction, className]) => <div key={direction} className={className} onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startResizeDragging(direction); }} />)}<div className="window-chrome"><div className="window-brand"><img src="/teoh.png" alt="" /></div><button className="drag-zone" onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startDragging(); }}>HORUS // COMMAND DECK</button><button onClick={() => isTauriRuntime() && void getCurrentWindow().minimize()}>—</button><button onClick={() => isTauriRuntime() && void getCurrentWindow().toggleMaximize()}>□</button><button className="close-window" onClick={() => isTauriRuntime() && void getCurrentWindow().hide()}>×</button></div></>}
+    {!decorations && <>{RESIZE_HANDLES.map(([direction, className]) => <div key={direction} className={className} onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startResizeDragging(direction); }} />)}<div className="window-chrome"><div className="window-brand"><img src="/teoh-alt1.png" alt="" /></div><button className="drag-zone" onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startDragging(); }}>HORUS // COMMAND DECK</button><button onClick={() => isTauriRuntime() && void getCurrentWindow().minimize()}>—</button><button onClick={() => isTauriRuntime() && void getCurrentWindow().toggleMaximize()}>□</button><button className="close-window" onClick={() => isTauriRuntime() && void getCurrentWindow().hide()}>×</button></div></>}
     <div className="ambient-grid" />
     <header className="topbar"><div className="brand-block"><div><span className="eyebrow">REAL-TIME SYSTEM OBSERVATORY</span><h1>HORUS</h1></div></div><div className="topbar-status"><div><span className={`live-dot ${snapshot ? 'online' : ''}`} />{snapshot ? 'TELEMETRY ONLINE' : 'TELEMETRY STANDBY'}</div><time>{new Date(snapshot?.timestampMs ?? Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time><button className="settings-trigger" onClick={() => setSettingsOpen(true)}>CONTROL MATRIX</button></div></header>
     <main>
@@ -223,7 +254,7 @@ function App() {
     <footer><span>HORUS NATIVE TELEMETRY BUS</span><div className="footer-status"><button className={`update-trigger ${updatePhase === 'available' ? 'has-update' : ''}`} onClick={() => void handleUpdate()} disabled={updatePhase === 'checking' || updatePhase === 'downloading' || updatePhase === 'installing'}>{updateLabel}</button><span>{snapshot ? `LAST SAMPLE ${new Date(snapshot.timestampMs).toLocaleTimeString()}` : 'NO NATIVE SAMPLE'}</span></div></footer>
     {eventTooltip && <aside className={`event-tooltip ${eventTooltip.above ? 'above' : ''}`} style={{ top: eventTooltip.top, left: eventTooltip.left, width: eventTooltip.width }} role="tooltip"><div><span>{eventTooltip.record.kind.toUpperCase()}</span><time>{new Date(eventTooltip.record.timestamp).toLocaleString()}</time></div><strong>{eventTooltip.record.source}</strong><p>{eventTooltip.record.message}</p></aside>}
     {settingsOpen && <button className="settings-backdrop" aria-label="Close settings" onClick={() => setSettingsOpen(false)} />}
-    <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} theme={theme} setTheme={setTheme} decorations={decorations} setDecorations={setDecorations} />
+    <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} theme={theme} setTheme={setTheme} decorations={decorations} setDecorations={setDecorations} autostart={autostart} autostartBusy={autostartBusy} onAutostartChange={(enabled) => void handleAutostartChange(enabled)} />
   </div>;
 }
 
