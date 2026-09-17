@@ -1,0 +1,12 @@
+!macro NSIS_HOOK_POSTINSTALL
+  ; Tauri update mode preserves existing shortcuts, so recreate an existing
+  ; desktop shortcut to make Explorer read the icon from the updated binary.
+  ${If} ${FileExists} "$DESKTOP\${PRODUCTNAME}.lnk"
+    Delete "$DESKTOP\${PRODUCTNAME}.lnk"
+    CreateShortcut "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe" "" "$INSTDIR\${MAINBINARYNAME}.exe" 0
+    !insertmacro SetLnkAppUserModelId "$DESKTOP\${PRODUCTNAME}.lnk"
+  ${EndIf}
+
+  ; Notify Explorer that icon associations changed and flush its icon cache.
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0x0000, p 0, p 0)'
+!macroend

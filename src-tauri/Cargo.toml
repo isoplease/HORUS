@@ -1,6 +1,6 @@
 [package]
 name = "horus"
-version = "0.2.12"
+version = "0.2.15"
 description = "HORUS real-time Windows system observatory"
 authors = ["isoplease"]
 license = "MIT"
@@ -16,6 +16,8 @@ sysinfo = { version = "0.39.6", default-features = true }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2.11.0"
+tauri-plugin-autostart = "2"
+tauri-plugin-window-state = "2"
 
 [features]
 default = ["custom-protocol"]
