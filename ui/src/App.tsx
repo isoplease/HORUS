@@ -27,7 +27,14 @@ const EVENT_FILTERS: Array<{ id: EventKind; label: string }> = [
 ];
 
 type UpdatePhase = 'idle' | 'checking' | 'current' | 'available' | 'downloading' | 'installing' | 'error';
+type TimelineRange = 30 | 60 | 300;
+type TimelineSeries = 'cpu' | 'memory' | 'gpu' | 'network';
 interface EventTooltip { record: WindowsEventRecord; top: number; left: number; width: number; above: boolean; }
+interface TelemetryPoint { timestampMs: number; cpu: number; memory: number; gpu: number; received: number; transmitted: number; }
+interface StorageIoPoint { timestampMs: number; read: number; write: number; }
+
+const TIMELINE_RANGES: Array<{ value: TimelineRange; label: string }> = [{ value: 30, label: '30S' }, { value: 60, label: '60S' }, { value: 300, label: '5M' }];
+const TIMELINE_SERIES: Array<{ id: TimelineSeries; label: string }> = [{ id: 'cpu', label: 'CPU' }, { id: 'memory', label: 'RAM' }, { id: 'gpu', label: 'GPU' }, { id: 'network', label: 'NET' }];
 
 function loadJson<T>(key: string, fallback: T): T {
   try { const value = localStorage.getItem(key); return value ? { ...fallback, ...JSON.parse(value) } : fallback; } catch { return fallback; }
@@ -50,12 +57,69 @@ function percent(part = 0, total = 0): number { return total > 0 ? Math.min(100,
 function Sparkline({ values, color = 'var(--chart)' }: { values: number[]; color?: string }) {
   const points = values.length > 1 ? values : [0, 0];
   const coordinates = points.map((value, index) => `${(index / Math.max(1, points.length - 1)) * 100},${46 - Math.min(100, Math.max(0, value)) * 0.4}`).join(' ');
-  return <svg className="sparkline" viewBox="0 0 100 50" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id="spark-fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={color} stopOpacity="0.32" /><stop offset="1" stopColor={color} stopOpacity="0" /></linearGradient></defs><polygon points={`0,50 ${coordinates} 100,50`} fill="url(#spark-fade)" /><polyline points={coordinates} fill="none" stroke={color} strokeWidth="1.6" vectorEffect="non-scaling-stroke" /></svg>;
+  return <svg className="sparkline" viewBox="0 0 100 50" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id="spark-fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={color} stopOpacity="0.32" /><stop offset="1" stopColor={color} stopOpacity="0" /></linearGradient></defs><path className="spark-grid" d="M0 10H100M0 28H100M25 0V50M50 0V50M75 0V50" /><polygon points={`0,50 ${coordinates} 100,50`} fill="url(#spark-fade)" /><polyline points={coordinates} fill="none" stroke={color} strokeWidth="1.6" vectorEffect="non-scaling-stroke" /></svg>;
+}
+
+function TelemetryTimeline({ samples, range, setRange, enabled, toggleSeries }: { samples: TelemetryPoint[]; range: TimelineRange; setRange: (range: TimelineRange) => void; enabled: Record<TimelineSeries, boolean>; toggleSeries: (series: TimelineSeries) => void }) {
+  const visible = samples.slice(-range);
+  const offset = Math.max(0, range - visible.length);
+  const xAt = (index: number) => ((offset + index) / Math.max(1, range - 1)) * 1000;
+  const yAt = (value: number) => 66 - Math.min(100, Math.max(0, value)) * .56;
+  const pointsFor = (key: 'cpu' | 'memory' | 'gpu') => visible.map((sample, index) => `${xAt(index).toFixed(1)},${yAt(sample[key]).toFixed(1)}`).join(' ');
+  const maxNetwork = Math.max(1, ...visible.map((sample) => Math.max(sample.received, sample.transmitted)));
+  const barStep = Math.max(1, Math.floor(range / 72));
+  const barWidth = Math.max(1.2, Math.min(5, 720 / range));
+  const spikes = visible.flatMap((sample, index) => {
+    if (index === 0) return [];
+    return (['cpu', 'memory', 'gpu'] as const).flatMap((series) => {
+      if (!enabled[series]) return [];
+      const change = sample[series] - visible[index - 1][series];
+      return sample[series] >= 65 && change >= 18 ? [{ series, value: sample[series], timestampMs: sample.timestampMs, x: xAt(index), y: yAt(sample[series]) }] : [];
+    });
+  }).slice(-3);
+  const latest = visible.at(-1);
+
+  return <section className="module telemetry-module">
+    <header className="timeline-header"><div><span>TELEMETRY / 05</span><h2>Telemetry Timeline</h2></div><div className="timeline-ranges" aria-label="Telemetry time range">{TIMELINE_RANGES.map((option) => <button key={option.value} className={range === option.value ? 'active' : ''} onClick={() => setRange(option.value)} aria-pressed={range === option.value}>{option.label}</button>)}</div></header>
+    <div className="timeline-series" aria-label="Visible telemetry series">{TIMELINE_SERIES.map((series) => <button key={series.id} className={`${series.id} ${enabled[series.id] ? 'active' : ''}`} onClick={() => toggleSeries(series.id)} aria-pressed={enabled[series.id]}><i />{series.label}<small>{series.id === 'network' ? formatBytes(Math.max(latest?.received ?? 0, latest?.transmitted ?? 0)) : `${(latest?.[series.id] ?? 0).toFixed(0)}%`}</small></button>)}</div>
+    <div className="timeline-chart" role="img" aria-label={`CPU, memory, GPU and network activity for the last ${range} seconds`}>
+      <svg viewBox="0 0 1000 100" preserveAspectRatio="none" aria-hidden="true">
+        <defs><filter id="timeline-glow"><feGaussianBlur stdDeviation="2.2" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter></defs>
+        <g className="timeline-grid"><path d="M0 10H1000M0 38H1000M0 66H1000M0 73H1000M0 92H1000" />{[0, 250, 500, 750, 1000].map((x) => <path d={`M${x} 0V100`} key={x} />)}</g>
+        {enabled.network && <g className="network-pulses">{visible.map((sample, index) => index % barStep === 0 ? <g key={sample.timestampMs}><rect className="receive" x={Math.min(998, xAt(index)) - barWidth} y={73 - (sample.received / maxNetwork) * 18} width={barWidth} height={(sample.received / maxNetwork) * 18} /><rect className="transmit" x={Math.min(998, xAt(index)) + .5} y="73" width={barWidth} height={(sample.transmitted / maxNetwork) * 17} /></g> : null)}</g>}
+        {enabled.cpu && visible.length > 1 && <polyline className="timeline-line cpu" points={pointsFor('cpu')} />}
+        {enabled.memory && visible.length > 1 && <polyline className="timeline-line memory" points={pointsFor('memory')} />}
+        {enabled.gpu && visible.length > 1 && <polyline className="timeline-line gpu" points={pointsFor('gpu')} />}
+      </svg>
+      {spikes.map((spike) => <span className={`spike-label ${spike.series}`} key={`${spike.series}-${spike.timestampMs}`} style={{ left: `${Math.min(94, Math.max(4, spike.x / 10))}%`, top: `${Math.max(25, spike.y - 2)}%` }}><b>{new Date(spike.timestampMs).toLocaleTimeString([], { minute: '2-digit', second: '2-digit' })}</b>{spike.value.toFixed(0)}%</span>)}
+      {!visible.length && <span className="timeline-waiting">AWAITING TELEMETRY STREAM</span>}
+      <div className="timeline-axis"><span>-{range === 300 ? '5m' : `${range}s`}</span><span>NOW</span></div>
+    </div>
+  </section>;
+}
+
+function StorageIoStream({ samples }: { samples: StorageIoPoint[] }) {
+  const visible = samples.slice(-60);
+  const peak = Math.max(1, ...visible.flatMap((sample) => [sample.read, sample.write]));
+  const pointsFor = (key: 'read' | 'write') => visible.map((sample, index) => {
+    const x = visible.length > 1 ? (index / (visible.length - 1)) * 100 : 100;
+    const y = 23 - (sample[key] / peak) * 18;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const latest = visible.at(-1);
+
+  return <div className="storage-io-stream">
+    <div className="storage-io-head"><span>STORAGE I/O STREAM</span><div><b className="read">R {formatBytes(latest?.read ?? 0)}</b><b className="write">W {formatBytes(latest?.write ?? 0)}</b></div></div>
+    <svg viewBox="0 0 100 26" preserveAspectRatio="none" role="img" aria-label={`Storage read ${formatBytes(latest?.read ?? 0)}, write ${formatBytes(latest?.write ?? 0)} in the latest interval`}>
+      <path className="storage-io-grid" d="M0 13H100M25 0V26M50 0V26M75 0V26" />
+      {visible.length > 1 && <><polyline className="storage-io-line read" points={pointsFor('read')} /><polyline className="storage-io-line write" points={pointsFor('write')} /></>}
+    </svg>
+  </div>;
 }
 
 function MetricRing({ value, label }: { value: number; label: string }) {
   const safeValue = Math.min(100, Math.max(0, value));
-  return <div className="metric-ring" style={{ '--ring-value': `${safeValue * 3.6}deg` } as CSSProperties}><div><strong>{safeValue.toFixed(0)}%</strong><span>{label}</span></div></div>;
+  return <div className="metric-ring" style={{ '--ring-value': `${safeValue * 3.6}deg` } as CSSProperties}><div><strong>{safeValue.toFixed(1)}%</strong><span>{label}</span></div></div>;
 }
 
 function ModuleHeader({ code, title, meta }: { code: string; title: string; meta?: ReactNode }) {
@@ -80,19 +144,20 @@ function EyeIcon({ crossed = false }: { crossed?: boolean }) {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" /><circle cx="12" cy="12" r="2.5" />{crossed && <path d="m4 4 16 16" />}</svg>;
 }
 
-function WindowControlIcon({ type }: { type: 'minimize' | 'maximize' | 'hide' }) {
-  if (type === 'minimize') return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 14h14" /><path className="icon-accent" d="M8 17h8" /></svg>;
-  if (type === 'maximize') return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5H5v4M15 5h4v4M5 15v4h4M19 15v4h-4" /><path className="icon-accent" d="M9 9h6v6H9z" /></svg>;
-  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17" /><path className="icon-accent" d="M12 3.5 20.5 12 12 20.5 3.5 12 12 3.5Z" /></svg>;
+function WindowControlIcon({ type }: { type: 'minimize' | 'maximize' | 'close' }) {
+  if (type === 'minimize') return <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 11.5h10" /></svg>;
+  if (type === 'maximize') return <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" /></svg>;
+  return <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8" /></svg>;
 }
 
-function HostHardware({ snapshot, visible, time, onToggle }: { snapshot: SystemSnapshot | null; visible: boolean; time: Date; onToggle: () => void }) {
+function HostHardware({ snapshot, operatingSystem, visible, time, onToggle }: { snapshot: SystemSnapshot | null; operatingSystem: string; visible: boolean; time: Date; onToggle: () => void }) {
   const memory = snapshot ? formatBytes(snapshot.totalMemoryBytes, 0) : '—';
   const videoMemory = snapshot?.gpuMemoryBytes ? formatBytes(snapshot.gpuMemoryBytes, 0) : '—';
   return <>
     <div className="host-side">
       <div className="host-specs-title"><span>SYSTEM SPECS</span><button className="specs-visibility" onClick={onToggle} title={visible ? 'Hide system specs' : 'Show system specs'} aria-label={visible ? 'Hide system specs' : 'Show system specs'}><EyeIcon crossed={!visible} /></button></div>
       {visible && <div className="host-specs">
+      <p className="host-os" title={operatingSystem}>{operatingSystem}</p>
       <p title={snapshot?.cpuModel}>{snapshot?.cpuModel ?? 'CPU telemetry pending'} <b>· RAM {memory}</b></p>
       <p title={snapshot?.gpuModel}>{snapshot?.gpuModel ?? 'GPU telemetry pending'} <b>· VRAM {videoMemory}</b></p>
       </div>}
@@ -118,6 +183,10 @@ function App() {
   const [snapshot, setSnapshot] = useState<SystemSnapshot | null>(null);
   const [telemetryError, setTelemetryError] = useState<string | null>(null);
   const [history, setHistory] = useState<number[]>([]);
+  const [timeline, setTimeline] = useState<TelemetryPoint[]>([]);
+  const [storageIo, setStorageIo] = useState<StorageIoPoint[]>([]);
+  const [timelineRange, setTimelineRange] = useState<TimelineRange>(60);
+  const [timelineSeries, setTimelineSeries] = useState<Record<TimelineSeries, boolean>>({ cpu: true, memory: true, gpu: true, network: true });
   const [theme, setTheme] = useState<ThemeSettings>(() => loadJson(THEME_KEY, DEFAULT_THEME));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [decorations, setDecorations] = useState(() => localStorage.getItem(FRAME_KEY) !== 'false');
@@ -192,7 +261,7 @@ function App() {
   }, []);
   useEffect(() => {
     let disposed = false;
-    const refresh = async () => { try { const next = await getSystemSnapshot(); if (disposed) return; setSnapshot(next); setTelemetryError(next ? null : 'Browser preview — native telemetry waits for the desktop runtime'); if (next) setHistory((current) => [...current.slice(-59), next.cpuPercent]); } catch (error) { if (!disposed) setTelemetryError(error instanceof Error ? error.message : String(error)); } };
+    const refresh = async () => { try { const next = await getSystemSnapshot(); if (disposed) return; setSnapshot(next); setTelemetryError(next ? null : 'Browser preview — native telemetry waits for the desktop runtime'); if (next) { setHistory((current) => [...current.slice(-59), next.cpuPercent]); setTimeline((current) => [...current.slice(-299), { timestampMs: next.timestampMs, cpu: next.cpuPercent, memory: percent(next.usedMemoryBytes, next.totalMemoryBytes), gpu: next.gpuPercent, received: next.receivedBytes, transmitted: next.transmittedBytes }]); setStorageIo((current) => [...current.slice(-59), { timestampMs: next.timestampMs, read: next.diskReadBytes, write: next.diskWriteBytes }]); } } catch (error) { if (!disposed) setTelemetryError(error instanceof Error ? error.message : String(error)); } };
     void refresh(); const timer = window.setInterval(refresh, 1_000); return () => { disposed = true; window.clearInterval(timer); };
   }, []);
 
@@ -262,23 +331,24 @@ function App() {
   };
 
   return <div className={`app-shell ${decorations ? '' : 'frameless'}`}>
-    {!decorations && <>{RESIZE_HANDLES.map(([direction, className]) => <div key={direction} className={className} onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startResizeDragging(direction); }} />)}<div className="window-chrome"><button className="drag-zone" aria-label="Move window" onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startDragging(); }}><img src="/hieroglyphics.png" alt="" /></button><div className="window-controls"><button className="chrome-action minimize-window" onClick={() => isTauriRuntime() && void getCurrentWindow().minimize()} aria-label="Minimize window" title="Minimize"><WindowControlIcon type="minimize" /></button><button className="chrome-action maximize-window" onClick={() => isTauriRuntime() && void getCurrentWindow().toggleMaximize()} aria-label="Maximize window" title="Maximize"><WindowControlIcon type="maximize" /></button><button className="chrome-action close-window" onClick={() => isTauriRuntime() && void getCurrentWindow().hide()} aria-label="Hide window" title="Hide"><WindowControlIcon type="hide" /></button></div></div></>}
+    {!decorations && <>{RESIZE_HANDLES.map(([direction, className]) => <div key={direction} className={className} onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startResizeDragging(direction); }} />)}<div className="window-chrome"><button className="drag-zone" aria-label="Move window" onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startDragging(); }}><img src="/hieroglyphics.png" alt="" /></button><div className="window-controls"><button className="chrome-action minimize-window" onClick={() => isTauriRuntime() && void getCurrentWindow().minimize()} aria-label="Minimize window" title="Minimize"><WindowControlIcon type="minimize" /></button><button className="chrome-action maximize-window" onClick={() => isTauriRuntime() && void getCurrentWindow().toggleMaximize()} aria-label="Maximize window" title="Maximize"><WindowControlIcon type="maximize" /></button><button className="chrome-action close-window" onClick={() => isTauriRuntime() && void getCurrentWindow().hide()} aria-label="Close window" title="Close"><WindowControlIcon type="close" /></button></div></div></>}
     <div className="ambient-grid" />
     <header className="topbar"><div className="brand-block"><div className="brand-mark" tabIndex={0} aria-describedby="brand-origin"><img className="brand-icon" src="/teoh-alt02-transparent.png" alt="HORUS emblem" /><div className="brand-popover" id="brand-origin" role="tooltip"><img src="/teoh-alt02-transparent.png" alt="" /><p>It was made on Earth by two entitiy named İsmail and Codex</p></div></div><div className="brand-copy"><h1>HORUS</h1><span className="eyebrow">REAL-TIME SYSTEM OBSERVATORY</span></div></div><div className="topbar-status"><div><span className={`live-dot ${snapshot ? 'online' : ''}`} />{snapshot ? 'TELEMETRY ONLINE' : 'TELEMETRY STANDBY'}</div><time>{new Date(snapshot?.timestampMs ?? Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time><button className="settings-trigger" onClick={() => setSettingsOpen(true)}>CONTROL MATRIX</button></div></header>
     <main>
-      <section className="pulse-ribbon"><div className="pulse-title"><span className={`pulse-beacon ${snapshot ? 'online' : ''}`} /><div><span>SYSTEM PULSE</span><strong>{snapshot ? 'NOMINAL' : 'STANDBY'}</strong></div></div><div className="pulse-reading host"><div className="host-copy"><span>HOST</span><strong>{snapshot?.hostName ?? '—'}</strong><small>{snapshot?.operatingSystem ?? telemetryError ?? 'Awaiting native runtime'}</small></div><HostHardware snapshot={snapshot} visible={hostSpecsVisible} time={clockTime} onToggle={() => setHostSpecsVisible((visible) => !visible)} /></div><div className="pulse-reading"><span>UPTIME</span><strong>{snapshot ? formatUptime(snapshot.uptimeSeconds) : '—'}</strong><small>{snapshot?.processCount ?? 0} active processes</small></div><div className="pulse-reading"><span>SYSTEM LOAD</span><strong>{snapshot ? `${snapshot.cpuPercent.toFixed(0)}%` : '—'}</strong><small>{snapshot?.logicalCpuCount ?? 0} logical processors</small></div></section>
+      <section className="pulse-ribbon"><div className="pulse-title"><span className={`pulse-beacon ${snapshot ? 'online' : ''}`} /><div><span>SYSTEM PULSE</span><strong>{snapshot ? 'NOMINAL' : 'STANDBY'}</strong></div></div><div className="pulse-reading host"><div className="host-copy"><span>HOST</span><strong>{snapshot?.hostName ?? '—'}</strong></div><HostHardware snapshot={snapshot} operatingSystem={snapshot?.operatingSystem ?? telemetryError ?? 'Awaiting native runtime'} visible={hostSpecsVisible} time={clockTime} onToggle={() => setHostSpecsVisible((visible) => !visible)} /></div><div className="pulse-reading"><span>UPTIME</span><strong>{snapshot ? formatUptime(snapshot.uptimeSeconds) : '—'}</strong><small>{snapshot?.processCount ?? 0} active processes</small></div><div className="pulse-reading"><span>SYSTEM LOAD</span><strong>{snapshot ? `${snapshot.cpuPercent.toFixed(0)}%` : '—'}</strong><small>{snapshot?.logicalCpuCount ?? 0} logical processors</small></div></section>
       <section className="command-surface">
         <div className="performance-grid">
-          <section className="module cpu-module"><ModuleHeader code="PERF / 01" title="CPU Matrix" meta={<span>{snapshot?.logicalCpuCount ?? 0} CORES</span>} /><div className="cpu-layout"><MetricRing value={snapshot?.cpuPercent ?? 0} label="TOTAL LOAD" /><div className="cpu-detail"><strong>{snapshot ? `${snapshot.cpuPercent.toFixed(1)}%` : '—'}</strong><span>aggregate utilization</span><div className="core-grid">{(snapshot?.perCpuPercent ?? []).slice(0, 16).map((value, index) => <i key={index} title={`CPU ${index + 1}: ${value.toFixed(0)}%`} style={{ '--core-load': `${value}%` } as CSSProperties} />)}</div></div><Sparkline values={history} /></div></section>
+          <section className="module cpu-module"><ModuleHeader code="PERF / 01" title="CPU Matrix" meta={<span>{snapshot?.logicalCpuCount ?? 0} CORES</span>} /><div className="cpu-layout"><MetricRing value={snapshot?.cpuPercent ?? 0} label="TOTAL LOAD" /><div className="core-grid">{(snapshot?.perCpuPercent ?? []).slice(0, 16).map((value, index) => <i key={index} title={`CPU ${index + 1}: ${value.toFixed(0)}%`} style={{ '--core-load': `${value}%` } as CSSProperties} />)}</div><div className="cpu-stream"><div className="cpu-stream-head"><span>CPU PROCESS STREAM</span><strong>{snapshot ? `${snapshot.cpuPercent.toFixed(1)}%` : '—'}</strong></div><Sparkline values={history} /></div></div></section>
           <section className="module memory-module"><ModuleHeader code="PERF / 02" title="Memory Field" meta={<span>{snapshot ? formatBytes(snapshot.totalMemoryBytes) : '—'} TOTAL</span>} /><div className="memory-layout"><div className="memory-value"><strong>{snapshot ? `${memoryPercent.toFixed(0)}%` : '—'}</strong><span>pressure</span></div><div className="segmented-bar"><i style={{ width: `${memoryPercent}%` }} /></div><div className="data-pairs"><span>Used<strong>{snapshot ? formatBytes(snapshot.usedMemoryBytes) : '—'}</strong></span><span>Available<strong>{snapshot ? formatBytes(snapshot.totalMemoryBytes - snapshot.usedMemoryBytes) : '—'}</strong></span><span>Swap<strong>{snapshot ? formatBytes(snapshot.usedSwapBytes) : '—'}</strong></span><span>Total<strong>{snapshot ? formatBytes(snapshot.totalMemoryBytes) : '—'}</strong></span></div></div></section>
           <section className="module network-module"><ModuleHeader code="I/O / 03" title="Network Stream" meta={<span>LIVE INTERVAL</span>} /><div className="network-layout"><div><span className="direction down">↓</span><span>RECEIVED</span><strong>{snapshot ? formatBytes(snapshot.receivedBytes) : '—'}</strong></div><div><span className="direction up">↑</span><span>TRANSMITTED</span><strong>{snapshot ? formatBytes(snapshot.transmittedBytes) : '—'}</strong></div><div className="traffic-line"><i /><i /><i /><i /><i /><i /></div></div></section>
         </div>
         <div className="storage-row">
-          <section className="module storage-module"><ModuleHeader code="STORAGE / 04" title="Storage Array" meta={<span>{diskTotal ? `${percent(diskUsed, diskTotal).toFixed(0)}% ARRAY UTILIZATION` : 'AWAITING DATA'}</span>} /><div className="disk-grid">{sortedDisks.length ? sortedDisks.map((disk) => { const used = percent(disk.totalBytes - disk.availableBytes, disk.totalBytes); return <div className="disk-row" key={`${disk.name}-${disk.mountPoint}`}><div><strong>{disk.mountPoint || disk.name}</strong><span>{formatBytes(disk.totalBytes - disk.availableBytes)} / {formatBytes(disk.totalBytes)}</span></div><div className="thin-bar"><i style={{ width: `${used}%` }} /></div><b>{used.toFixed(0)}%</b></div>; }) : <EmptyState text="No storage telemetry received." />}</div></section>
+          <section className="module storage-module"><ModuleHeader code="STORAGE / 04" title="Storage Array" meta={<span>{diskTotal ? 'LIVE ARRAY' : 'AWAITING DATA'}</span>} /><StorageIoStream samples={storageIo} /><div className="array-utilization"><span>ARRAY UTILIZATION</span><strong>{diskTotal ? `${percent(diskUsed, diskTotal).toFixed(0)}%` : '—'}</strong></div><div className="disk-grid">{sortedDisks.length ? sortedDisks.map((disk) => { const used = percent(disk.totalBytes - disk.availableBytes, disk.totalBytes); return <div className="disk-row" key={`${disk.name}-${disk.mountPoint}`}><div><strong>{disk.mountPoint || disk.name}</strong><span>{formatBytes(disk.totalBytes - disk.availableBytes)} / {formatBytes(disk.totalBytes)}</span></div><div className="thin-bar"><i style={{ width: `${used}%` }} /></div><b>{used.toFixed(0)}%</b></div>; }) : <EmptyState text="No storage telemetry received." />}</div></section>
+          <TelemetryTimeline samples={timeline} range={timelineRange} setRange={setTimelineRange} enabled={timelineSeries} toggleSeries={(series) => setTimelineSeries((current) => ({ ...current, [series]: !current[series] }))} />
         </div>
         <div className="operations-grid">
-          <section className="module process-module"><ModuleHeader code="ACTIVITY / 05" title="Process Flow" meta={<span>{snapshot?.processCount ?? 0} ACTIVE</span>} /><div className="process-list"><div className="list-head"><span>PROCESS</span><span>CPU</span><span>MEMORY</span><span>PID</span></div>{snapshot?.topProcesses.length ? snapshot.topProcesses.map((process) => <div className="process-row" key={process.pid}><span><i />{process.name}</span><strong>{process.cpuPercent.toFixed(1)}%</strong><strong>{formatBytes(process.memoryBytes)}</strong><code>{process.pid}</code></div>) : <EmptyState text="Native process stream is waiting for the desktop runtime." />}</div></section>
-          <section className="module events-module"><ModuleHeader code="WINDOWS / 06" title="System Events" meta={<span>LIVE EVENT LOG</span>} /><div className="event-filters" role="tablist" aria-label="Event category">{EVENT_FILTERS.map((filter) => <button key={filter.id} className={`${filter.id} ${eventFilter === filter.id ? 'active' : ''}`} onClick={() => { setEventFilter(filter.id); setEventTooltip(null); }} role="tab" aria-selected={eventFilter === filter.id}><span>{filter.label}</span><strong>{events.filter((event) => event.kind === filter.id).length}</strong></button>)}</div><div className="event-list" onScroll={() => setEventTooltip(null)}>{filteredEvents.length ? filteredEvents.map((record) => <article className={`event-row ${record.kind}`} key={record.id} tabIndex={0} onMouseEnter={(event) => showEventTooltip(event.currentTarget, record)} onMouseLeave={() => setEventTooltip(null)} onFocus={(event) => showEventTooltip(event.currentTarget, record)} onBlur={() => setEventTooltip(null)}><i /><div><strong>{record.source}</strong><p>{record.message}</p></div><time>{new Date(record.timestamp).toLocaleString()}</time></article>) : <div className="event-empty"><span>NO RECENT RECORDS</span><strong>{EVENT_FILTERS.find((filter) => filter.id === eventFilter)?.label} channel is clear</strong><p>Windows Event Log is active. New matching records will appear automatically.</p></div>}</div></section>
+          <section className="module process-module"><ModuleHeader code="ACTIVITY / 06" title="Process Flow" meta={<span>{snapshot?.processCount ?? 0} ACTIVE</span>} /><div className="process-list"><div className="list-head"><span>PROCESS</span><span>CPU</span><span>MEMORY</span><span>PID</span></div>{snapshot?.topProcesses.length ? snapshot.topProcesses.map((process) => <div className="process-row" key={process.pid}><span><i />{process.name}</span><strong>{process.cpuPercent.toFixed(1)}%</strong><strong>{formatBytes(process.memoryBytes)}</strong><code>{process.pid}</code></div>) : <EmptyState text="Native process stream is waiting for the desktop runtime." />}</div></section>
+          <section className="module events-module"><ModuleHeader code="WINDOWS / 07" title="System Events" meta={<span>LIVE EVENT LOG</span>} /><div className="event-filters" role="tablist" aria-label="Event category">{EVENT_FILTERS.map((filter) => <button key={filter.id} className={`${filter.id} ${eventFilter === filter.id ? 'active' : ''}`} onClick={() => { setEventFilter(filter.id); setEventTooltip(null); }} role="tab" aria-selected={eventFilter === filter.id}><span>{filter.label}</span><strong>{events.filter((event) => event.kind === filter.id).length}</strong></button>)}</div><div className="event-list" onScroll={() => setEventTooltip(null)}>{filteredEvents.length ? filteredEvents.map((record) => <article className={`event-row ${record.kind}`} key={record.id} tabIndex={0} onMouseEnter={(event) => showEventTooltip(event.currentTarget, record)} onMouseLeave={() => setEventTooltip(null)} onFocus={(event) => showEventTooltip(event.currentTarget, record)} onBlur={() => setEventTooltip(null)}><i /><div><strong>{record.source}</strong><p>{record.message}</p></div><time>{new Date(record.timestamp).toLocaleString()}</time></article>) : <div className="event-empty"><span>NO RECENT RECORDS</span><strong>{EVENT_FILTERS.find((filter) => filter.id === eventFilter)?.label} channel is clear</strong><p>Windows Event Log is active. New matching records will appear automatically.</p></div>}</div></section>
         </div>
       </section>
     </main>

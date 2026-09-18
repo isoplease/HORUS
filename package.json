@@ -1,7 +1,7 @@
 {
   "name": "horus-command-deck",
   "private": true,
-  "version": "0.2.15",
+  "version": "0.2.19",
   "packageManager": "pnpm@11.19.0",
   "type": "module",
   "scripts": {
