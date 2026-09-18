@@ -6,8 +6,11 @@ use std::os::windows::process::CommandExt;
 use std::{
     path::PathBuf,
     process::Command,
-    sync::Mutex,
-    time::{SystemTime, UNIX_EPOCH},
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use sysinfo::{Disks, Networks, ProcessesToUpdate, System};
 use tauri::{
@@ -21,6 +24,7 @@ struct TelemetryState {
     networks: Mutex<Networks>,
     disks: Mutex<Disks>,
     hardware: HardwareInfo,
+    gpu_percent: Arc<AtomicU32>,
 }
 
 #[derive(Clone)]
@@ -73,12 +77,15 @@ struct SystemSnapshot {
     cpu_model: String,
     gpu_model: String,
     gpu_memory_bytes: u64,
+    gpu_percent: f32,
     total_memory_bytes: u64,
     used_memory_bytes: u64,
     total_swap_bytes: u64,
     used_swap_bytes: u64,
     received_bytes: u64,
     transmitted_bytes: u64,
+    disk_read_bytes: u64,
+    disk_write_bytes: u64,
     process_count: usize,
     top_processes: Vec<ProcessSample>,
     disks: Vec<DiskSample>,
@@ -111,6 +118,14 @@ fn get_system_snapshot(state: tauri::State<'_, TelemetryState>) -> Result<System
             }
         })
         .collect::<Vec<_>>();
+    let disk_read_bytes = top_processes
+        .iter()
+        .map(|process| process.disk_read_bytes)
+        .sum();
+    let disk_write_bytes = top_processes
+        .iter()
+        .map(|process| process.disk_write_bytes)
+        .sum();
     top_processes.sort_by(|left, right| {
         right
             .cpu_percent
@@ -157,12 +172,15 @@ fn get_system_snapshot(state: tauri::State<'_, TelemetryState>) -> Result<System
         cpu_model: state.hardware.cpu_model.clone(),
         gpu_model: state.hardware.gpu_model.clone(),
         gpu_memory_bytes: state.hardware.gpu_memory_bytes,
+        gpu_percent: f32::from_bits(state.gpu_percent.load(Ordering::Relaxed)),
         total_memory_bytes: system.total_memory(),
         used_memory_bytes: system.used_memory(),
         total_swap_bytes: system.total_swap(),
         used_swap_bytes: system.used_swap(),
         received_bytes,
         transmitted_bytes,
+        disk_read_bytes,
+        disk_write_bytes,
         process_count: system.processes().len(),
         top_processes,
         disks: disk_samples,
@@ -197,6 +215,92 @@ fn query_windows_gpu() -> (String, u64) {
         .and_then(|output| parse_gpu_info(&String::from_utf8_lossy(&output.stdout)))
         .unwrap_or_else(|| ("Unknown GPU".to_string(), 0))
 }
+
+#[cfg(windows)]
+fn start_gpu_usage_sampler(target: Arc<AtomicU32>) {
+    std::thread::spawn(move || unsafe {
+        use std::collections::HashMap;
+        use windows::{
+            core::PCWSTR,
+            Win32::{
+                Foundation::ERROR_SUCCESS,
+                System::Performance::{
+                    PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData,
+                    PdhGetFormattedCounterArrayW, PdhOpenQueryW, PDH_FMT_COUNTERVALUE_ITEM_W,
+                    PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY, PDH_MORE_DATA,
+                },
+            },
+        };
+
+        let mut query = PDH_HQUERY::default();
+        if PdhOpenQueryW(PCWSTR::null(), 0, &mut query) != ERROR_SUCCESS.0 {
+            return;
+        }
+
+        let path = "\\GPU Engine(*)\\Utilization Percentage"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let mut counter = PDH_HCOUNTER::default();
+        if PdhAddEnglishCounterW(query, PCWSTR(path.as_ptr()), 0, &mut counter) != ERROR_SUCCESS.0 {
+            let _ = PdhCloseQuery(query);
+            return;
+        }
+
+        loop {
+            if PdhCollectQueryData(query) == ERROR_SUCCESS.0 {
+                let mut buffer_size = 0u32;
+                let mut item_count = 0u32;
+                let status = PdhGetFormattedCounterArrayW(
+                    counter,
+                    PDH_FMT_DOUBLE,
+                    &mut buffer_size,
+                    &mut item_count,
+                    None,
+                );
+                if status == PDH_MORE_DATA && buffer_size > 0 && item_count > 0 {
+                    let word_size = std::mem::size_of::<usize>();
+                    let mut storage = vec![0usize; (buffer_size as usize).div_ceil(word_size)];
+                    let items = storage.as_mut_ptr().cast::<PDH_FMT_COUNTERVALUE_ITEM_W>();
+                    if PdhGetFormattedCounterArrayW(
+                        counter,
+                        PDH_FMT_DOUBLE,
+                        &mut buffer_size,
+                        &mut item_count,
+                        Some(items),
+                    ) == ERROR_SUCCESS.0
+                    {
+                        let mut engines = HashMap::<String, f64>::new();
+                        for item in std::slice::from_raw_parts(items, item_count as usize) {
+                            let value = item.FmtValue.Anonymous.doubleValue;
+                            if item.FmtValue.CStatus != ERROR_SUCCESS.0
+                                || !value.is_finite()
+                                || value <= 0.0
+                            {
+                                continue;
+                            }
+                            let name = item.szName.to_string().unwrap_or_default();
+                            let engine = name
+                                .find("_luid_")
+                                .map(|start| &name[start + 1..])
+                                .unwrap_or(name.as_str());
+                            *engines.entry(engine.to_string()).or_default() += value;
+                        }
+                        let busiest_engine = engines
+                            .into_values()
+                            .fold(0.0_f64, f64::max)
+                            .clamp(0.0, 100.0) as f32;
+                        target.store(busiest_engine.to_bits(), Ordering::Relaxed);
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn start_gpu_usage_sampler(_target: Arc<AtomicU32>) {}
 
 #[cfg(not(windows))]
 fn query_windows_gpu() -> (String, u64) {
@@ -413,6 +517,8 @@ fn main() {
         .filter(|model| !model.is_empty())
         .unwrap_or_else(|| "Unknown CPU".to_string());
     let (gpu_model, gpu_memory_bytes) = query_windows_gpu();
+    let gpu_percent = Arc::new(AtomicU32::new(0f32.to_bits()));
+    start_gpu_usage_sampler(Arc::clone(&gpu_percent));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
@@ -441,6 +547,7 @@ fn main() {
                 gpu_model,
                 gpu_memory_bytes,
             },
+            gpu_percent,
         })
         .invoke_handler(tauri::generate_handler![
             get_system_snapshot,

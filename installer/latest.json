@@ -1,11 +1,11 @@
 {
-    "version":  "0.2.17",
-    "notes":  "HORUS v0.2.17",
-    "pub_date":  "2026-09-18T07:14:39.9604382Z",
+    "version":  "0.2.19",
+    "notes":  "HORUS v0.2.19",
+    "pub_date":  "2026-09-18T10:58:09.3595578Z",
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTME5uaTFlSEpaQkZMRjUyWm5nS2t4Z01Ub2gyY3JvUTYwZTlSNUVtQ29odFRvYXkrRGFDYzY3bEgxbHhiQXFBbHAvVDFzVmtEbUc3L3FYT2wweis4UDdUdU5lU2JZL3c4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5NzE1Njc5CWZpbGU6SE9SVVNfMC4yLjE3X3g2NC1zZXR1cC5leGUKcWt5SjMvRE1wK2pvZTBmZHFQL1NoR0FTUDZVRW1MTFNpVk1qdnZSMi9jL2Yya1dkbWF4ZDlNT2YvR0d6RkZ1by9KbjE5Y0ZXWVBJcGhBQnpZN09EQWc9PQo=",
-                                             "url":  "https://github.com/isoplease/HORUS/releases/download/v0.2.17/HORUS_0.2.17_x64-setup.exe"
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTME5uaTFlSEpaQkVMZzBwQ0NXeU5EZ2pYa1NPZWVYbzE5bFRFTC9CQk9GdkoyK2ZFQnFRTmpKaUpjSlhJN2FKaXRvaUdoYUdGb1QvVXZud21LY1NLM0lGWVVYQ2ZiZlFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5NzI5MDg4CWZpbGU6SE9SVVNfMC4yLjE5X3g2NC1zZXR1cC5leGUKUm41T2x0Y0FPdXRhRWh4Wk1lS0NXOTFEU3U2TGw1NzNETit3TmpuNWg5T1l1YlduN0JoUnM1V00zK0k2cERSbmJ2SmtMek0xNkVrNkQ0Zk1ub08xQ0E9PQo=",
+                                             "url":  "https://github.com/isoplease/HORUS/releases/download/v0.2.19/HORUS_0.2.19_x64-setup.exe"
                                          }
                   }
 }

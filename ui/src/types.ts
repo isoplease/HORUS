@@ -35,12 +35,15 @@ export interface SystemSnapshot {
   cpuModel: string;
   gpuModel: string;
   gpuMemoryBytes: number;
+  gpuPercent: number;
   totalMemoryBytes: number;
   usedMemoryBytes: number;
   totalSwapBytes: number;
   usedSwapBytes: number;
   receivedBytes: number;
   transmittedBytes: number;
+  diskReadBytes: number;
+  diskWriteBytes: number;
   processCount: number;
   topProcesses: ProcessSample[];
   disks: DiskSample[];
