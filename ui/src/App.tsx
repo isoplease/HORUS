@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -13,6 +13,8 @@ const FRAME_KEY = 'horus-window-frame-v1';
 const AUTOSTART_INITIALIZED_KEY = 'horus-autostart-initialized-v1';
 const HOST_SPECS_KEY = 'horus-host-specs-visible-v1';
 const SETTINGS_BLUR_KEY = 'horus-settings-backdrop-blur-v1';
+const HIEROGLYPH_MOTION_KEY = 'horus-hieroglyph-motion-v1';
+const HIEROGLYPH_SPEED_KEY = 'horus-hieroglyph-speed-v1';
 const DEMO_MODE = import.meta.env.DEV && new URLSearchParams(window.location.search).has('demo');
 
 const POLL_INTERVALS = { core: 1_000, process: 2_000, disk: 15_000, events: 60_000 } as const;
@@ -160,11 +162,19 @@ function ModuleHeader({ code, title, meta }: { code: string; title: string; meta
 
 function EmptyState({ text }: { text: string }) { return <div className="empty-state"><span>⌁</span><p>{text}</p></div>; }
 
+function incidentSourceClass(code: string): string {
+  if (/^(CPU)\b/.test(code)) return 'source-cpu';
+  if (/^(RAM|MEMORY)\b/.test(code)) return 'source-memory';
+  if (/^(GPU)\b/.test(code)) return 'source-gpu';
+  if (/^(NET|NETWORK)\b/.test(code)) return 'source-network';
+  return '';
+}
+
 function IncidentStream({ incidents }: { incidents: IncidentItem[] }) {
   return <section className="incident-stream" aria-label="Incident stream">
     <header><div><span>DIAGNOSTICS / 08</span><strong>Incident Stream</strong></div><small>{incidents.length ? `${incidents.length} LOGGED` : 'ARMED'}</small></header>
     <div className="incident-feed" aria-live="polite">
-      {incidents.length ? incidents.map((incident) => <article className={`incident-packet ${incident.level}`} key={incident.id}>
+      {incidents.length ? incidents.map((incident) => <article className={`incident-packet ${incident.level} ${incidentSourceClass(incident.code)}`} key={incident.id}>
         <i />
         <time>{new Date(incident.timestampMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time>
         <b>{incident.code}</b>
@@ -212,15 +222,16 @@ function HostHardware({ snapshot, operatingSystem, visible, time, onToggle }: { 
   </>;
 }
 
-interface SettingsPanelProps { open: boolean; onClose: () => void; theme: ThemeSettings; setTheme: (value: ThemeSettings) => void; decorations: boolean; setDecorations: (value: boolean) => void; settingsBlur: boolean; setSettingsBlur: (value: boolean) => void; autostart: boolean; autostartBusy: boolean; onAutostartChange: (value: boolean) => void; }
-function SettingsPanel({ open, onClose, theme, setTheme, decorations, setDecorations, settingsBlur, setSettingsBlur, autostart, autostartBusy, onAutostartChange }: SettingsPanelProps) {
+interface SettingsPanelProps { open: boolean; onClose: () => void; theme: ThemeSettings; setTheme: (value: ThemeSettings) => void; decorations: boolean; setDecorations: (value: boolean) => void; settingsBlur: boolean; setSettingsBlur: (value: boolean) => void; hieroglyphMotion: boolean; setHieroglyphMotion: (value: boolean) => void; hieroglyphSpeed: number; setHieroglyphSpeed: (value: number) => void; autostart: boolean; autostartBusy: boolean; onAutostartChange: (value: boolean) => void; }
+function SettingsPanel({ open, onClose, theme, setTheme, decorations, setDecorations, settingsBlur, setSettingsBlur, hieroglyphMotion, setHieroglyphMotion, hieroglyphSpeed, setHieroglyphSpeed, autostart, autostartBusy, onAutostartChange }: SettingsPanelProps) {
   const update = <K extends keyof ThemeSettings>(key: K, value: ThemeSettings[K]) => setTheme({ ...theme, [key]: value });
   const colors: Array<[keyof ThemeSettings, string]> = [['background', 'Background'], ['card', 'Surface'], ['heading', 'Headings'], ['info', 'Info text'], ['accent', 'Accent'], ['chart', 'Charts'], ['warning', 'Warnings'], ['critical', 'Critical']];
   return <aside className={`settings-panel ${open ? 'is-open' : ''}`} aria-hidden={!open}>
     <div className="settings-title"><div><span className="eyebrow">CONTROL / APPEARANCE</span><h2>Interface Matrix</h2></div><button className="icon-button" onClick={onClose}>×</button></div>
     <section><h3>Color channels</h3><div className="color-grid">{colors.map(([key, label]) => <label key={key}><span>{label}</span><input type="color" value={String(theme[key])} onChange={(event) => update(key, event.target.value as never)} /></label>)}</div></section>
     <section className="range-stack"><h3>Surface density</h3><label className={decorations ? 'is-disabled' : ''}><span>Background transparency <output>{theme.backgroundTransparency}%</output></span><input type="range" min="0" max="70" value={theme.backgroundTransparency} disabled={decorations} onChange={(event) => update('backgroundTransparency', Number(event.target.value))} /></label><label><span>Surface opacity <output>{theme.cardOpacity}%</output></span><input type="range" min="55" max="100" value={theme.cardOpacity} onChange={(event) => update('cardOpacity', Number(event.target.value))} /></label><label><span>Glow intensity <output>{theme.glow}%</output></span><input type="range" min="0" max="100" value={theme.glow} onChange={(event) => update('glow', Number(event.target.value))} /></label><label><span>Corner radius <output>{theme.radius}px</output></span><input type="range" min="0" max="20" value={theme.radius} onChange={(event) => update('radius', Number(event.target.value))} /></label></section>
-    <section className="module-toggles"><h3>Window</h3><label><span>Start with Windows</span><input type="checkbox" checked={autostart} disabled={autostartBusy} onChange={(event) => onAutostartChange(event.target.checked)} /></label><label><span>Windows frame</span><input type="checkbox" checked={decorations} onChange={(event) => setDecorations(event.target.checked)} /></label><label><span>Control Matrix background blur</span><input type="checkbox" checked={settingsBlur} onChange={(event) => setSettingsBlur(event.target.checked)} /></label></section>
+    <section className="module-toggles"><h3>Window</h3><label><span>Start with Windows</span><input type="checkbox" checked={autostart} disabled={autostartBusy} onChange={(event) => onAutostartChange(event.target.checked)} /></label><label><span>Windows frame</span><input type="checkbox" checked={decorations} onChange={(event) => setDecorations(event.target.checked)} /></label><label><span>Control Matrix background blur</span><input type="checkbox" checked={settingsBlur} onChange={(event) => setSettingsBlur(event.target.checked)} /></label><label><span>Hieroglyph flow</span><input type="checkbox" checked={hieroglyphMotion} onChange={(event) => setHieroglyphMotion(event.target.checked)} /></label></section>
+    <section className="range-stack"><h3>Window chrome</h3><label className={!hieroglyphMotion ? 'is-disabled' : ''}><span>Hieroglyph flow speed <output>{hieroglyphSpeed}%</output></span><input type="range" min="25" max="200" step="5" value={hieroglyphSpeed} disabled={!hieroglyphMotion} onChange={(event) => setHieroglyphSpeed(Number(event.target.value))} /></label></section>
     <div className="settings-actions"><button onClick={() => setTheme(DEFAULT_THEME)}>Reset theme</button></div>
   </aside>;
 }
@@ -240,6 +251,9 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [decorations, setDecorations] = useState(() => localStorage.getItem(FRAME_KEY) !== 'false');
   const [settingsBlur, setSettingsBlur] = useState(() => localStorage.getItem(SETTINGS_BLUR_KEY) !== 'false');
+  const [hieroglyphMotion, setHieroglyphMotion] = useState(() => localStorage.getItem(HIEROGLYPH_MOTION_KEY) !== 'false');
+  const [hieroglyphSpeed, setHieroglyphSpeed] = useState(() => { const stored = Number(localStorage.getItem(HIEROGLYPH_SPEED_KEY)); return Number.isFinite(stored) && stored >= 25 && stored <= 200 ? stored : 100; });
+  const [windowDragging, setWindowDragging] = useState(false);
   const [autostart, setAutostart] = useState(false);
   const [autostartBusy, setAutostartBusy] = useState(false);
   const [eventFilter, setEventFilter] = useState<EventKind>('warning');
@@ -356,6 +370,8 @@ function App() {
 
   useEffect(() => { localStorage.setItem(FRAME_KEY, String(decorations)); if (isTauriRuntime()) void invoke('set_window_frame', { decorations }).catch((error) => console.error('Window frame could not be updated:', error)); }, [decorations]);
   useEffect(() => { localStorage.setItem(SETTINGS_BLUR_KEY, String(settingsBlur)); }, [settingsBlur]);
+  useEffect(() => { localStorage.setItem(HIEROGLYPH_MOTION_KEY, String(hieroglyphMotion)); }, [hieroglyphMotion]);
+  useEffect(() => { localStorage.setItem(HIEROGLYPH_SPEED_KEY, String(hieroglyphSpeed)); }, [hieroglyphSpeed]);
   useEffect(() => { localStorage.setItem(HOST_SPECS_KEY, String(hostSpecsVisible)); }, [hostSpecsVisible]);
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -658,8 +674,15 @@ function App() {
     setEventTooltip({ record, top: above ? rect.top - 8 : rect.bottom + 8, left, width, above });
   };
 
+  const handleWindowDrag = async (event: MouseEvent<HTMLButtonElement>) => {
+    if (event.button !== 0 || !isTauriRuntime()) return;
+    setWindowDragging(true);
+    try { await getCurrentWindow().startDragging(); }
+    finally { setWindowDragging(false); }
+  };
+
   return <div className={`app-shell ${decorations ? '' : 'frameless'}`}>
-    {!decorations && <>{RESIZE_HANDLES.map(([direction, className]) => <div key={direction} className={className} onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startResizeDragging(direction); }} />)}<div className="window-chrome"><button className="drag-zone" aria-label="Move window" onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startDragging(); }}><img src="/hieroglyphics.png" alt="" /></button><div className="window-controls"><button className="chrome-action minimize-window" onClick={() => { setMonitoringActive(false); if (isTauriRuntime()) void getCurrentWindow().minimize(); }} aria-label="Minimize window" title="Minimize"><WindowControlIcon type="minimize" /></button><button className="chrome-action maximize-window" onClick={() => isTauriRuntime() && void getCurrentWindow().toggleMaximize()} aria-label="Maximize window" title="Maximize"><WindowControlIcon type="maximize" /></button><button className="chrome-action close-window" onClick={() => { setMonitoringActive(false); if (isTauriRuntime()) void getCurrentWindow().hide(); }} aria-label="Close window" title="Close"><WindowControlIcon type="close" /></button></div></div></>}
+    {!decorations && <>{RESIZE_HANDLES.map(([direction, className]) => <div key={direction} className={className} onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startResizeDragging(direction); }} />)}<div className="window-chrome"><button className={`drag-zone ${windowDragging ? 'is-dragging' : ''}`} aria-label="Move window" onMouseDown={(event) => void handleWindowDrag(event)}><span className={`hieroglyph-track ${!hieroglyphMotion || windowDragging ? 'is-paused' : ''}`} style={{ '--hieroglyph-duration': `${48 * 100 / hieroglyphSpeed}s` } as CSSProperties} aria-hidden="true"><img src="/hieroglyphics.png" alt="" /><img src="/hieroglyphics.png" alt="" /></span></button><div className="window-controls"><button className="chrome-action minimize-window" onClick={() => { setMonitoringActive(false); if (isTauriRuntime()) void getCurrentWindow().minimize(); }} aria-label="Minimize window" title="Minimize"><WindowControlIcon type="minimize" /></button><button className="chrome-action maximize-window" onClick={() => isTauriRuntime() && void getCurrentWindow().toggleMaximize()} aria-label="Maximize window" title="Maximize"><WindowControlIcon type="maximize" /></button><button className="chrome-action close-window" onClick={() => { setMonitoringActive(false); if (isTauriRuntime()) void getCurrentWindow().hide(); }} aria-label="Close window" title="Close"><WindowControlIcon type="close" /></button></div></div></>}
     <div className="ambient-grid" />
     <header className="topbar"><div className="brand-block"><div className="brand-mark" tabIndex={0} aria-describedby="brand-origin"><img className="brand-icon" src="/teoh-alt02-transparent.png" alt="HORUS emblem" /><div className="brand-popover" id="brand-origin" role="tooltip"><img src="/teoh-alt02-transparent.png" alt="" /><p>It was made on Earth by two entitiy named İsmail and Codex</p></div></div><div className="brand-copy"><h1>HORUS</h1><span className="eyebrow">REAL-TIME SYSTEM OBSERVATORY</span></div></div><div className="topbar-status"><div><span className={`live-dot ${telemetryOnline ? 'online' : ''} ${pulseState === 'ABNORMAL' ? 'abnormal' : ''}`} />{topbarStatus}</div><button className="settings-trigger" onClick={() => setSettingsOpen(true)}>CONTROL MATRIX</button></div></header>
     <main>
@@ -683,7 +706,7 @@ function App() {
     <footer><span>HORUS NATIVE TELEMETRY BUS</span><div className="footer-status"><button className={`update-trigger ${updatePhase === 'available' ? 'has-update' : ''}`} onClick={() => void handleUpdate()} disabled={updatePhase === 'checking' || updatePhase === 'downloading' || updatePhase === 'installing'}>{updateLabel}</button><span>{snapshot ? `LAST SAMPLE ${new Date(snapshot.timestampMs).toLocaleTimeString()}` : 'NO NATIVE SAMPLE'}</span></div></footer>
     {eventTooltip && <aside className={`event-tooltip ${eventTooltip.above ? 'above' : ''}`} style={{ top: eventTooltip.top, left: eventTooltip.left, width: eventTooltip.width }} role="tooltip"><div><span>{eventTooltip.record.kind.toUpperCase()}</span><time>{new Date(eventTooltip.record.timestamp).toLocaleString()}</time></div><strong>{eventTooltip.record.source}</strong><p>{eventTooltip.record.message}</p></aside>}
     {settingsOpen && <button className={`settings-backdrop ${settingsBlur ? 'is-blurred' : ''}`} aria-label="Close settings" onClick={() => setSettingsOpen(false)} />}
-    <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} theme={theme} setTheme={setTheme} decorations={decorations} setDecorations={setDecorations} settingsBlur={settingsBlur} setSettingsBlur={setSettingsBlur} autostart={autostart} autostartBusy={autostartBusy} onAutostartChange={(enabled) => void handleAutostartChange(enabled)} />
+    <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} theme={theme} setTheme={setTheme} decorations={decorations} setDecorations={setDecorations} settingsBlur={settingsBlur} setSettingsBlur={setSettingsBlur} hieroglyphMotion={hieroglyphMotion} setHieroglyphMotion={setHieroglyphMotion} hieroglyphSpeed={hieroglyphSpeed} setHieroglyphSpeed={setHieroglyphSpeed} autostart={autostart} autostartBusy={autostartBusy} onAutostartChange={(enabled) => void handleAutostartChange(enabled)} />
   </div>;
 }
 
