@@ -7,7 +7,7 @@ use std::{
     path::PathBuf,
     process::Command,
     sync::{
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, Mutex,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -16,15 +16,17 @@ use sysinfo::{Disks, Networks, ProcessesToUpdate, System};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-    Manager, WindowEvent,
+    Emitter, Manager, WindowEvent,
 };
 
 struct TelemetryState {
-    system: Mutex<System>,
+    core_system: Mutex<System>,
+    process_system: Mutex<System>,
     networks: Mutex<Networks>,
     disks: Mutex<Disks>,
     hardware: HardwareInfo,
     gpu_percent: Arc<AtomicU32>,
+    monitoring_active: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -66,7 +68,7 @@ struct WindowsEventRecord {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SystemSnapshot {
+struct CoreSnapshot {
     timestamp_ms: u128,
     host_name: String,
     operating_system: String,
@@ -84,25 +86,84 @@ struct SystemSnapshot {
     used_swap_bytes: u64,
     received_bytes: u64,
     transmitted_bytes: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProcessSnapshot {
+    timestamp_ms: u128,
     disk_read_bytes: u64,
     disk_write_bytes: u64,
     process_count: usize,
     top_processes: Vec<ProcessSample>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiskSnapshot {
+    timestamp_ms: u128,
     disks: Vec<DiskSample>,
 }
 
 #[tauri::command]
-fn get_system_snapshot(state: tauri::State<'_, TelemetryState>) -> Result<SystemSnapshot, String> {
+fn get_core_snapshot(state: tauri::State<'_, TelemetryState>) -> Result<CoreSnapshot, String> {
+    if !state.monitoring_active.load(Ordering::Relaxed) {
+        return Err("MONITORING_PAUSED".to_string());
+    }
     let mut system = state
-        .system
+        .core_system
         .lock()
         .map_err(|_| "Telemetry state is unavailable".to_string())?;
     system.refresh_cpu_usage();
     system.refresh_memory();
-    system.refresh_processes(ProcessesToUpdate::All, true);
 
     let logical_cpu_count = system.cpus().len();
-    let cpu_divisor = logical_cpu_count.max(1) as f32;
+    let mut networks = state
+        .networks
+        .lock()
+        .map_err(|_| "Network telemetry state is unavailable".to_string())?;
+    networks.refresh(true);
+    let received_bytes = networks.values().map(|network| network.received()).sum();
+    let transmitted_bytes = networks.values().map(|network| network.transmitted()).sum();
+
+    Ok(CoreSnapshot {
+        timestamp_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_millis(),
+        host_name: System::host_name().unwrap_or_else(|| "Unknown host".to_string()),
+        operating_system: System::long_os_version()
+            .unwrap_or_else(|| "Unknown Windows version".to_string()),
+        uptime_seconds: System::uptime(),
+        cpu_percent: system.global_cpu_usage().clamp(0.0, 100.0),
+        logical_cpu_count,
+        per_cpu_percent: system.cpus().iter().map(|cpu| cpu.cpu_usage()).collect(),
+        cpu_model: state.hardware.cpu_model.clone(),
+        gpu_model: state.hardware.gpu_model.clone(),
+        gpu_memory_bytes: state.hardware.gpu_memory_bytes,
+        gpu_percent: f32::from_bits(state.gpu_percent.load(Ordering::Relaxed)),
+        total_memory_bytes: system.total_memory(),
+        used_memory_bytes: system.used_memory(),
+        total_swap_bytes: system.total_swap(),
+        used_swap_bytes: system.used_swap(),
+        received_bytes,
+        transmitted_bytes,
+    })
+}
+
+#[tauri::command]
+fn get_process_snapshot(
+    state: tauri::State<'_, TelemetryState>,
+) -> Result<ProcessSnapshot, String> {
+    if !state.monitoring_active.load(Ordering::Relaxed) {
+        return Err("MONITORING_PAUSED".to_string());
+    }
+    let mut system = state
+        .process_system
+        .lock()
+        .map_err(|_| "Process telemetry state is unavailable".to_string())?;
+    system.refresh_processes(ProcessesToUpdate::All, true);
+    let cpu_divisor = system.cpus().len().max(1) as f32;
     let mut top_processes = system
         .processes()
         .iter()
@@ -134,14 +195,23 @@ fn get_system_snapshot(state: tauri::State<'_, TelemetryState>) -> Result<System
     });
     top_processes.truncate(7);
 
-    let mut networks = state
-        .networks
-        .lock()
-        .map_err(|_| "Network telemetry state is unavailable".to_string())?;
-    networks.refresh(true);
-    let received_bytes = networks.values().map(|network| network.received()).sum();
-    let transmitted_bytes = networks.values().map(|network| network.transmitted()).sum();
+    Ok(ProcessSnapshot {
+        timestamp_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_millis(),
+        disk_read_bytes,
+        disk_write_bytes,
+        process_count: system.processes().len(),
+        top_processes,
+    })
+}
 
+#[tauri::command]
+fn get_disk_snapshot(state: tauri::State<'_, TelemetryState>) -> Result<DiskSnapshot, String> {
+    if !state.monitoring_active.load(Ordering::Relaxed) {
+        return Err("MONITORING_PAUSED".to_string());
+    }
     let mut disks = state
         .disks
         .lock()
@@ -157,32 +227,11 @@ fn get_system_snapshot(state: tauri::State<'_, TelemetryState>) -> Result<System
         })
         .collect();
 
-    Ok(SystemSnapshot {
+    Ok(DiskSnapshot {
         timestamp_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| error.to_string())?
             .as_millis(),
-        host_name: System::host_name().unwrap_or_else(|| "Unknown host".to_string()),
-        operating_system: System::long_os_version()
-            .unwrap_or_else(|| "Unknown Windows version".to_string()),
-        uptime_seconds: System::uptime(),
-        cpu_percent: system.global_cpu_usage().clamp(0.0, 100.0),
-        logical_cpu_count,
-        per_cpu_percent: system.cpus().iter().map(|cpu| cpu.cpu_usage()).collect(),
-        cpu_model: state.hardware.cpu_model.clone(),
-        gpu_model: state.hardware.gpu_model.clone(),
-        gpu_memory_bytes: state.hardware.gpu_memory_bytes,
-        gpu_percent: f32::from_bits(state.gpu_percent.load(Ordering::Relaxed)),
-        total_memory_bytes: system.total_memory(),
-        used_memory_bytes: system.used_memory(),
-        total_swap_bytes: system.total_swap(),
-        used_swap_bytes: system.used_swap(),
-        received_bytes,
-        transmitted_bytes,
-        disk_read_bytes,
-        disk_write_bytes,
-        process_count: system.processes().len(),
-        top_processes,
         disks: disk_samples,
     })
 }
@@ -217,7 +266,7 @@ fn query_windows_gpu() -> (String, u64) {
 }
 
 #[cfg(windows)]
-fn start_gpu_usage_sampler(target: Arc<AtomicU32>) {
+fn start_gpu_usage_sampler(target: Arc<AtomicU32>, monitoring_active: Arc<AtomicBool>) {
     std::thread::spawn(move || unsafe {
         use std::collections::HashMap;
         use windows::{
@@ -248,6 +297,11 @@ fn start_gpu_usage_sampler(target: Arc<AtomicU32>) {
         }
 
         loop {
+            if !monitoring_active.load(Ordering::Relaxed) {
+                target.store(0f32.to_bits(), Ordering::Relaxed);
+                std::thread::sleep(Duration::from_millis(250));
+                continue;
+            }
             if PdhCollectQueryData(query) == ERROR_SUCCESS.0 {
                 let mut buffer_size = 0u32;
                 let mut item_count = 0u32;
@@ -300,7 +354,7 @@ fn start_gpu_usage_sampler(target: Arc<AtomicU32>) {
 }
 
 #[cfg(not(windows))]
-fn start_gpu_usage_sampler(_target: Arc<AtomicU32>) {}
+fn start_gpu_usage_sampler(_target: Arc<AtomicU32>, _monitoring_active: Arc<AtomicBool>) {}
 
 #[cfg(not(windows))]
 fn query_windows_gpu() -> (String, u64) {
@@ -308,12 +362,14 @@ fn query_windows_gpu() -> (String, u64) {
 }
 
 fn decode_utf16_le(bytes: &[u8]) -> Result<String, String> {
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         return Err("Windows Event Log returned malformed Unicode output".to_string());
     }
     let words = bytes
-        .chunks_exact(2)
-        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|chunk| u16::from_le_bytes(*chunk))
         .collect::<Vec<_>>();
     String::from_utf16(&words)
         .map(|value| value.trim_start_matches('\u{feff}').to_string())
@@ -432,12 +488,22 @@ fn query_windows_event_log(channel: &str, count: usize) -> Result<Vec<WindowsEve
 }
 
 #[tauri::command]
-fn get_windows_events() -> Result<Vec<WindowsEventRecord>, String> {
+fn get_windows_events(
+    state: tauri::State<'_, TelemetryState>,
+) -> Result<Vec<WindowsEventRecord>, String> {
+    if !state.monitoring_active.load(Ordering::Relaxed) {
+        return Err("MONITORING_PAUSED".to_string());
+    }
     let mut events = query_windows_event_log("System", 40)?;
     events.extend(query_windows_event_log("Application", 20)?);
     events.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
     events.truncate(60);
     Ok(events)
+}
+
+#[tauri::command]
+fn set_monitoring_active(state: tauri::State<'_, TelemetryState>, active: bool) {
+    state.monitoring_active.store(active, Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -477,15 +543,24 @@ mod tests {
     }
 }
 
+fn publish_monitoring_state(app: &tauri::AppHandle, active: bool) {
+    if let Some(state) = app.try_state::<TelemetryState>() {
+        state.monitoring_active.store(active, Ordering::Relaxed);
+    }
+    let _ = app.emit("monitoring-state", active);
+}
+
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+        publish_monitoring_state(app, true);
     }
 }
 
 fn hide_main_window(app: &tauri::AppHandle) {
+    publish_monitoring_state(app, false);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
     }
@@ -506,11 +581,10 @@ fn set_window_frame(window: tauri::WebviewWindow, decorations: bool) -> Result<(
 }
 
 fn main() {
-    let mut system = System::new_all();
+    let mut core_system = System::new_all();
     std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
-    system.refresh_cpu_usage();
-    system.refresh_processes(ProcessesToUpdate::All, true);
-    let cpu_model = system
+    core_system.refresh_cpu_usage();
+    let cpu_model = core_system
         .cpus()
         .first()
         .map(|cpu| cpu.brand().trim().to_string())
@@ -518,7 +592,8 @@ fn main() {
         .unwrap_or_else(|| "Unknown CPU".to_string());
     let (gpu_model, gpu_memory_bytes) = query_windows_gpu();
     let gpu_percent = Arc::new(AtomicU32::new(0f32.to_bits()));
-    start_gpu_usage_sampler(Arc::clone(&gpu_percent));
+    let monitoring_active = Arc::new(AtomicBool::new(false));
+    start_gpu_usage_sampler(Arc::clone(&gpu_percent), Arc::clone(&monitoring_active));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
@@ -539,7 +614,8 @@ fn main() {
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(TelemetryState {
-            system: Mutex::new(system),
+            core_system: Mutex::new(core_system),
+            process_system: Mutex::new(System::new_all()),
             networks: Mutex::new(Networks::new_with_refreshed_list()),
             disks: Mutex::new(Disks::new_with_refreshed_list()),
             hardware: HardwareInfo {
@@ -548,10 +624,14 @@ fn main() {
                 gpu_memory_bytes,
             },
             gpu_percent,
+            monitoring_active,
         })
         .invoke_handler(tauri::generate_handler![
-            get_system_snapshot,
+            get_core_snapshot,
+            get_process_snapshot,
+            get_disk_snapshot,
             get_windows_events,
+            set_monitoring_active,
             set_window_frame
         ])
         .setup(|app| {
@@ -585,11 +665,18 @@ fn main() {
                 .build(app)?;
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
+                publish_monitoring_state(window.app_handle(), false);
                 let _ = window.hide();
             }
+            WindowEvent::Resized(_) => {
+                let active =
+                    window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
+                publish_monitoring_state(window.app_handle(), active);
+            }
+            _ => {}
         })
         .run(tauri::generate_context!())
         .expect("error while running HORUS");

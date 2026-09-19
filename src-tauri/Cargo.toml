@@ -1,6 +1,6 @@
 [package]
 name = "horus"
-version = "0.2.19"
+version = "0.2.23"
 description = "HORUS real-time Windows system observatory"
 authors = ["isoplease"]
 license = "MIT"

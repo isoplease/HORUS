@@ -24,7 +24,7 @@ export interface WindowsEventRecord {
   timestamp: string;
 }
 
-export interface SystemSnapshot {
+export interface CoreSnapshot {
   timestampMs: number;
   hostName: string;
   operatingSystem: string;
@@ -42,12 +42,22 @@ export interface SystemSnapshot {
   usedSwapBytes: number;
   receivedBytes: number;
   transmittedBytes: number;
+}
+
+export interface ProcessSnapshot {
+  timestampMs: number;
   diskReadBytes: number;
   diskWriteBytes: number;
   processCount: number;
   topProcesses: ProcessSample[];
+}
+
+export interface DiskSnapshot {
+  timestampMs: number;
   disks: DiskSample[];
 }
+
+export interface SystemSnapshot extends CoreSnapshot, ProcessSnapshot, DiskSnapshot {}
 
 export interface ThemeSettings {
   background: string;
