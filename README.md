@@ -1,3 +1,6 @@
+<img width="1125" height="998" alt="image" src="https://github.com/user-attachments/assets/e6b8c6b3-ad40-49f0-8b7c-34827b86d6b2" />
+
+
 # HORUS Command Deck
 
 HORUS is a real-time Windows telemetry and diagnostics dashboard built with Tauri, Rust, React and TypeScript. It presents native system data in a compact command-deck interface designed for an always-visible secondary display.
