@@ -1,17 +1,22 @@
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { disable as disableAutostart, enable as enableAutostart, isEnabled as isAutostartEnabled } from '@tauri-apps/plugin-autostart';
 import { check, type Update } from '@tauri-apps/plugin-updater';
-import { getSystemSnapshot, getWindowsEvents, isTauriRuntime } from './telemetry';
-import type { EventKind, SystemSnapshot, ThemeSettings, WindowsEventRecord } from './types';
+import { getCoreSnapshot, getDiskSnapshot, getProcessSnapshot, getWindowsEvents, isTauriRuntime, setMonitoringActive as setNativeMonitoringActive } from './telemetry';
+import type { CoreSnapshot, DiskSnapshot, EventKind, ProcessSnapshot, SystemSnapshot, ThemeSettings, WindowsEventRecord } from './types';
 
 const THEME_KEY = 'horus-theme-v1';
 const FRAME_KEY = 'horus-window-frame-v1';
 const AUTOSTART_INITIALIZED_KEY = 'horus-autostart-initialized-v1';
 const HOST_SPECS_KEY = 'horus-host-specs-visible-v1';
 const SETTINGS_BLUR_KEY = 'horus-settings-backdrop-blur-v1';
+const DEMO_MODE = import.meta.env.DEV && new URLSearchParams(window.location.search).has('demo');
+
+const POLL_INTERVALS = { core: 1_000, process: 2_000, disk: 15_000, events: 60_000 } as const;
+const QUERY_TIMEOUTS = { core: 2_500, process: 4_000, disk: 6_000, events: 10_000 } as const;
 
 const DEFAULT_THEME: ThemeSettings = {
   background: '#050c14', backgroundTransparency: 18, card: '#0a1b2b', heading: '#eaf8ff', info: '#86a4b7', accent: '#20c9f4', chart: '#35e2c2', warning: '#ffbd59', critical: '#ff5577', cardOpacity: 92, glow: 34, radius: 10, gap: 10,
@@ -29,12 +34,18 @@ const EVENT_FILTERS: Array<{ id: EventKind; label: string }> = [
 type UpdatePhase = 'idle' | 'checking' | 'current' | 'available' | 'downloading' | 'installing' | 'error';
 type TimelineRange = 30 | 60 | 300;
 type TimelineSeries = 'cpu' | 'memory' | 'gpu' | 'network';
+type QueryKey = keyof typeof POLL_INTERVALS;
+type QueryIssue = 'TIMEOUT' | 'ERROR';
+type IncidentLevel = 'info' | 'warning' | 'critical' | 'recovery';
 interface EventTooltip { record: WindowsEventRecord; top: number; left: number; width: number; above: boolean; }
 interface TelemetryPoint { timestampMs: number; cpu: number; memory: number; gpu: number; received: number; transmitted: number; }
 interface StorageIoPoint { timestampMs: number; read: number; write: number; }
+interface IncidentItem { id: number; timestampMs: number; level: IncidentLevel; code: string; message: string; }
 
 const TIMELINE_RANGES: Array<{ value: TimelineRange; label: string }> = [{ value: 30, label: '30S' }, { value: 60, label: '60S' }, { value: 300, label: '5M' }];
 const TIMELINE_SERIES: Array<{ id: TimelineSeries; label: string }> = [{ id: 'cpu', label: 'CPU' }, { id: 'memory', label: 'RAM' }, { id: 'gpu', label: 'GPU' }, { id: 'network', label: 'NET' }];
+const QUERY_LABELS: Record<QueryKey, string> = { core: 'CORE', process: 'PROCESS', disk: 'DISK', events: 'EVENT LOG' };
+const QUERY_DESCRIPTIONS: Record<QueryKey, string> = { core: 'Live CPU, RAM, GPU or network sample', process: 'Process and storage I/O sample', disk: 'Disk capacity sample', events: 'Windows Event Log sample' };
 
 function loadJson<T>(key: string, fallback: T): T {
   try { const value = localStorage.getItem(key); return value ? { ...fallback, ...JSON.parse(value) } : fallback; } catch { return fallback; }
@@ -60,7 +71,7 @@ function Sparkline({ values, color = 'var(--chart)' }: { values: number[]; color
   return <svg className="sparkline" viewBox="0 0 100 50" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id="spark-fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={color} stopOpacity="0.32" /><stop offset="1" stopColor={color} stopOpacity="0" /></linearGradient></defs><path className="spark-grid" d="M0 10H100M0 28H100M25 0V50M50 0V50M75 0V50" /><polygon points={`0,50 ${coordinates} 100,50`} fill="url(#spark-fade)" /><polyline points={coordinates} fill="none" stroke={color} strokeWidth="1.6" vectorEffect="non-scaling-stroke" /></svg>;
 }
 
-function TelemetryTimeline({ samples, range, setRange, enabled, toggleSeries }: { samples: TelemetryPoint[]; range: TimelineRange; setRange: (range: TimelineRange) => void; enabled: Record<TimelineSeries, boolean>; toggleSeries: (series: TimelineSeries) => void }) {
+function TelemetryTimeline({ samples, range, setRange, enabled, toggleSeries, fault }: { samples: TelemetryPoint[]; range: TimelineRange; setRange: (range: TimelineRange) => void; enabled: Record<TimelineSeries, boolean>; toggleSeries: (series: TimelineSeries) => void; fault: boolean }) {
   const visible = samples.slice(-range);
   const offset = Math.max(0, range - visible.length);
   const xAt = (index: number) => ((offset + index) / Math.max(1, range - 1)) * 1000;
@@ -92,13 +103,14 @@ function TelemetryTimeline({ samples, range, setRange, enabled, toggleSeries }: 
         {enabled.gpu && visible.length > 1 && <polyline className="timeline-line gpu" points={pointsFor('gpu')} />}
       </svg>
       {spikes.map((spike) => <span className={`spike-label ${spike.series}`} key={`${spike.series}-${spike.timestampMs}`} style={{ left: `${Math.min(94, Math.max(4, spike.x / 10))}%`, top: `${Math.max(25, spike.y - 2)}%` }}><b>{new Date(spike.timestampMs).toLocaleTimeString([], { minute: '2-digit', second: '2-digit' })}</b>{spike.value.toFixed(0)}%</span>)}
+      {fault && <span className="query-fault-marker" title="Core telemetry query stalled">/</span>}
       {!visible.length && <span className="timeline-waiting">AWAITING TELEMETRY STREAM</span>}
       <div className="timeline-axis"><span>-{range === 300 ? '5m' : `${range}s`}</span><span>NOW</span></div>
     </div>
   </section>;
 }
 
-function StorageIoStream({ samples }: { samples: StorageIoPoint[] }) {
+function StorageIoStream({ samples, fault }: { samples: StorageIoPoint[]; fault: boolean }) {
   const visible = samples.slice(-60);
   const peak = Math.max(1, ...visible.flatMap((sample) => [sample.read, sample.write]));
   const pointsFor = (key: 'read' | 'write') => visible.map((sample, index) => {
@@ -114,8 +126,11 @@ function StorageIoStream({ samples }: { samples: StorageIoPoint[] }) {
       <path className="storage-io-grid" d="M0 13H100M25 0V26M50 0V26M75 0V26" />
       {visible.length > 1 && <><polyline className="storage-io-line read" points={pointsFor('read')} /><polyline className="storage-io-line write" points={pointsFor('write')} /></>}
     </svg>
+    {fault && <span className="query-fault-marker" title="Process I/O query stalled">/</span>}
   </div>;
 }
+
+function formatRate(value: number): string { return `${formatBytes(value)}/s`; }
 
 function MetricRing({ value, label }: { value: number; label: string }) {
   const safeValue = Math.min(100, Math.max(0, value));
@@ -127,6 +142,20 @@ function ModuleHeader({ code, title, meta }: { code: string; title: string; meta
 }
 
 function EmptyState({ text }: { text: string }) { return <div className="empty-state"><span>⌁</span><p>{text}</p></div>; }
+
+function IncidentStream({ incidents }: { incidents: IncidentItem[] }) {
+  return <section className="incident-stream" aria-label="Incident stream">
+    <header><div><span>DIAGNOSTICS / 08</span><strong>Incident Stream</strong></div><small>{incidents.length ? `${incidents.length} LOGGED` : 'ARMED'}</small></header>
+    <div className="incident-feed" aria-live="polite">
+      {incidents.length ? incidents.map((incident) => <article className={`incident-packet ${incident.level}`} key={incident.id}>
+        <i />
+        <time>{new Date(incident.timestampMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time>
+        <b>{incident.code}</b>
+        <p>{incident.message}</p>
+      </article>) : <div className="incident-idle"><i /><span>CHANNEL CLEAR</span><p>Timeouts, telemetry deviations and state changes will appear here.</p></div>}
+    </div>
+  </section>;
+}
 
 function BinaryClock({ time }: { time: Date }) {
   const digits = time.toLocaleTimeString('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }).replaceAll(':', '').split('').map(Number);
@@ -180,11 +209,14 @@ function SettingsPanel({ open, onClose, theme, setTheme, decorations, setDecorat
 }
 
 function App() {
-  const [snapshot, setSnapshot] = useState<SystemSnapshot | null>(null);
+  const [coreSnapshot, setCoreSnapshot] = useState<CoreSnapshot | null>(null);
+  const [processSnapshot, setProcessSnapshot] = useState<ProcessSnapshot | null>(null);
+  const [diskSnapshot, setDiskSnapshot] = useState<DiskSnapshot | null>(null);
   const [telemetryError, setTelemetryError] = useState<string | null>(null);
   const [history, setHistory] = useState<number[]>([]);
   const [timeline, setTimeline] = useState<TelemetryPoint[]>([]);
   const [storageIo, setStorageIo] = useState<StorageIoPoint[]>([]);
+  const [networkRates, setNetworkRates] = useState({ received: 0, transmitted: 0, peak: 0 });
   const [timelineRange, setTimelineRange] = useState<TimelineRange>(60);
   const [timelineSeries, setTimelineSeries] = useState<Record<TimelineSeries, boolean>>({ cpu: true, memory: true, gpu: true, network: true });
   const [theme, setTheme] = useState<ThemeSettings>(() => loadJson(THEME_KEY, DEFAULT_THEME));
@@ -202,6 +234,101 @@ function App() {
   const [updateProgress, setUpdateProgress] = useState(0);
   const [eventTooltip, setEventTooltip] = useState<EventTooltip | null>(null);
   const [hostSpecsVisible, setHostSpecsVisible] = useState(() => localStorage.getItem(HOST_SPECS_KEY) !== 'false');
+  const [monitoringActive, setMonitoringActive] = useState(() => !isTauriRuntime());
+  const [coreReady, setCoreReady] = useState(() => !isTauriRuntime());
+  const [queryIssues, setQueryIssues] = useState<Partial<Record<QueryKey, QueryIssue>>>({});
+  const [incidents, setIncidents] = useState<IncidentItem[]>([]);
+  const coreInFlight = useRef(false);
+  const processInFlight = useRef(false);
+  const diskInFlight = useRef(false);
+  const eventsInFlight = useRef(false);
+  const coreNeedsWarmup = useRef(true);
+  const processNeedsWarmup = useRef(true);
+  const incidentCounter = useRef(0);
+  const incidentCooldowns = useRef(new Map<string, number>());
+  const queryIssuesRef = useRef<Partial<Record<QueryKey, QueryIssue>>>({});
+  const previousCoreSample = useRef<CoreSnapshot | null>(null);
+  const seenCriticalEvents = useRef(new Set<string>());
+  const criticalEventsInitialized = useRef(false);
+  const previousPulseState = useRef<string | null>(null);
+
+  const pushIncident = useCallback((level: IncidentLevel, code: string, message: string, fingerprint = `${code}:${message}`, cooldownMs = 30_000) => {
+    const now = Date.now();
+    const previous = incidentCooldowns.current.get(fingerprint) ?? 0;
+    if (now - previous < cooldownMs) return;
+    incidentCooldowns.current.set(fingerprint, now);
+    if (incidentCooldowns.current.size > 80) {
+      const oldest = [...incidentCooldowns.current.entries()].sort((left, right) => left[1] - right[1]).slice(0, 20);
+      oldest.forEach(([key]) => incidentCooldowns.current.delete(key));
+    }
+    const incident: IncidentItem = { id: ++incidentCounter.current, timestampMs: now, level, code, message };
+    setIncidents((current) => [incident, ...current].slice(0, 24));
+  }, []);
+
+  const raiseQueryIssue = useCallback((key: QueryKey, issue: QueryIssue) => {
+    if (queryIssuesRef.current[key] === issue) return;
+    queryIssuesRef.current = { ...queryIssuesRef.current, [key]: issue };
+    setQueryIssues(queryIssuesRef.current);
+    pushIncident('critical', `${QUERY_LABELS[key]} ${issue}`, `${QUERY_DESCRIPTIONS[key]} ${issue === 'TIMEOUT' ? 'exceeded its response window' : 'failed'}.`, `query-${key}-${issue}`, 0);
+  }, [pushIncident]);
+
+  const clearQueryIssue = useCallback((key: QueryKey) => {
+    if (!queryIssuesRef.current[key]) return;
+    const next = { ...queryIssuesRef.current };
+    delete next[key];
+    queryIssuesRef.current = next;
+    setQueryIssues(next);
+    pushIncident('recovery', `${QUERY_LABELS[key]} RECOVERED`, `${QUERY_DESCRIPTIONS[key]} restored.`, `query-${key}-recovered`, 0);
+  }, [pushIncident]);
+
+  const snapshot = useMemo<SystemSnapshot | null>(() => coreSnapshot ? {
+    ...coreSnapshot,
+    diskReadBytes: processSnapshot?.diskReadBytes ?? 0,
+    diskWriteBytes: processSnapshot?.diskWriteBytes ?? 0,
+    processCount: processSnapshot?.processCount ?? 0,
+    topProcesses: processSnapshot?.topProcesses ?? [],
+    disks: diskSnapshot?.disks ?? [],
+  } : null, [coreSnapshot, diskSnapshot, processSnapshot]);
+
+  useEffect(() => {
+    if (!DEMO_MODE) return;
+    const now = Date.now();
+    const samples = Array.from({ length: 60 }, (_, index) => ({
+      timestampMs: now - (59 - index) * 1_000,
+      cpu: Math.max(8, Math.min(96, 42 + Math.sin(index / 4) * 18 + (index === 48 ? 38 : 0))),
+      memory: 62 + Math.sin(index / 9) * 4,
+      gpu: Math.max(4, Math.min(92, 28 + Math.sin(index / 5) * 22 + (index === 53 ? 45 : 0))),
+      received: 420_000 + Math.abs(Math.sin(index / 3)) * 3_800_000,
+      transmitted: 180_000 + Math.abs(Math.cos(index / 4)) * 1_200_000,
+    }));
+    setCoreSnapshot({ timestampMs: now, hostName: 'HORUS-TEST-RIG', operatingSystem: 'Windows 11 Pro 24H2', uptimeSeconds: 284_440, cpuPercent: 47.6, logicalCpuCount: 16, perCpuPercent: [32, 58, 41, 69, 24, 51, 36, 63, 44, 71, 29, 55, 38, 61, 34, 49], cpuModel: 'AMD Ryzen 7 5700X3D 8-Core Processor', gpuModel: 'NVIDIA GeForce RTX 5070', gpuMemoryBytes: 12 * 1024 ** 3, gpuPercent: 54.2, totalMemoryBytes: 32 * 1024 ** 3, usedMemoryBytes: 20.4 * 1024 ** 3, totalSwapBytes: 8 * 1024 ** 3, usedSwapBytes: 1.7 * 1024 ** 3, receivedBytes: 3_820_000, transmittedBytes: 860_000 });
+    setNetworkRates({ received: 3_820_000, transmitted: 860_000, peak: 7_460_000 });
+    setProcessSnapshot({ timestampMs: now, diskReadBytes: 38_400_000, diskWriteBytes: 12_700_000, processCount: 187, topProcesses: [
+      { pid: 8420, name: 'Cyberpunk2077.exe', cpuPercent: 18.7, memoryBytes: 6.8 * 1024 ** 3, diskReadBytes: 18_200_000, diskWriteBytes: 4_200_000 },
+      { pid: 2216, name: 'chrome.exe', cpuPercent: 7.4, memoryBytes: 2.1 * 1024 ** 3, diskReadBytes: 4_800_000, diskWriteBytes: 1_100_000 },
+      { pid: 10932, name: 'Discord.exe', cpuPercent: 3.2, memoryBytes: 730 * 1024 ** 2, diskReadBytes: 1_600_000, diskWriteBytes: 620_000 },
+      { pid: 4664, name: 'explorer.exe', cpuPercent: 1.1, memoryBytes: 288 * 1024 ** 2, diskReadBytes: 420_000, diskWriteBytes: 180_000 },
+    ] });
+    setDiskSnapshot({ timestampMs: now, disks: [
+      { name: 'NVMe System', mountPoint: 'C:\\', totalBytes: 953.9 * 1024 ** 3, availableBytes: 341.2 * 1024 ** 3 },
+      { name: 'Game Array', mountPoint: 'D:\\', totalBytes: 1.81 * 1024 ** 4, availableBytes: 722.5 * 1024 ** 3 },
+    ] });
+    setHistory(samples.map((sample) => sample.cpu));
+    setTimeline(samples);
+    setStorageIo(samples.map((sample, index) => ({ timestampMs: sample.timestampMs, read: 8_000_000 + Math.abs(Math.sin(index / 4)) * 42_000_000, write: 3_000_000 + Math.abs(Math.cos(index / 5)) * 18_000_000 })));
+    setEvents([
+      { id: 'demo-warning', kind: 'warning', source: 'Display', message: 'Display driver response briefly exceeded the expected interval.', timestamp: new Date(now - 92_000).toISOString() },
+      { id: 'demo-critical', kind: 'critical', source: 'Kernel-Power', message: 'Test critical event generated for the HORUS diagnostics preview.', timestamp: new Date(now - 420_000).toISOString() },
+      { id: 'demo-application', kind: 'application', source: 'HORUS', message: 'Native telemetry channels initialized successfully.', timestamp: new Date(now - 18_000).toISOString() },
+    ]);
+    incidentCounter.current = 3;
+    setIncidents([
+      { id: 3, timestampMs: now - 31_000, level: 'critical', code: 'CORE TIMEOUT', message: 'Live telemetry sample exceeded its response window.' },
+      { id: 2, timestampMs: now - 44_000, level: 'warning', code: 'GPU DEVIATION', message: 'Load jumped 34 points to 87%.' },
+      { id: 1, timestampMs: now - 58_000, level: 'info', code: 'SYNCING', message: 'Telemetry baselines are being synchronized.' },
+    ]);
+    setCoreReady(true);
+  }, []);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -246,24 +373,190 @@ function App() {
     return () => { disposed = true; window.clearTimeout(timer); };
   }, []);
   useEffect(() => {
+    if (!isTauriRuntime()) return;
     let disposed = false;
-    const refreshEvents = async () => {
-      try {
-        const next = await getWindowsEvents();
-        if (!disposed) setEvents(next);
-      } catch (error) {
-        console.error('Windows events could not be read:', error);
-      }
-    };
-    void refreshEvents();
-    const timer = window.setInterval(refreshEvents, 15_000);
-    return () => { disposed = true; window.clearInterval(timer); };
+    const unlisteners: UnlistenFn[] = [];
+    const appWindow = getCurrentWindow();
+    const applyState = (active: boolean) => { if (!disposed) setMonitoringActive(active); };
+    const syncWindowState = async () => applyState(await appWindow.isVisible() && !await appWindow.isMinimized());
+    void listen<boolean>('monitoring-state', (event) => applyState(event.payload)).then((unlisten) => disposed ? unlisten() : unlisteners.push(unlisten));
+    void appWindow.onResized(() => { void syncWindowState(); }).then((unlisten) => disposed ? unlisten() : unlisteners.push(unlisten));
+    void syncWindowState();
+    return () => { disposed = true; unlisteners.forEach((unlisten) => unlisten()); };
   }, []);
   useEffect(() => {
-    let disposed = false;
-    const refresh = async () => { try { const next = await getSystemSnapshot(); if (disposed) return; setSnapshot(next); setTelemetryError(next ? null : 'Browser preview — native telemetry waits for the desktop runtime'); if (next) { setHistory((current) => [...current.slice(-59), next.cpuPercent]); setTimeline((current) => [...current.slice(-299), { timestampMs: next.timestampMs, cpu: next.cpuPercent, memory: percent(next.usedMemoryBytes, next.totalMemoryBytes), gpu: next.gpuPercent, received: next.receivedBytes, transmitted: next.transmittedBytes }]); setStorageIo((current) => [...current.slice(-59), { timestampMs: next.timestampMs, read: next.diskReadBytes, write: next.diskWriteBytes }]); } } catch (error) { if (!disposed) setTelemetryError(error instanceof Error ? error.message : String(error)); } };
-    void refresh(); const timer = window.setInterval(refresh, 1_000); return () => { disposed = true; window.clearInterval(timer); };
-  }, []);
+    coreNeedsWarmup.current = true;
+    processNeedsWarmup.current = true;
+    previousCoreSample.current = null;
+    if (!DEMO_MODE) setNetworkRates({ received: 0, transmitted: 0, peak: 0 });
+    setCoreReady(!isTauriRuntime());
+    if (monitoringActive && isTauriRuntime()) {
+      setCoreSnapshot(null);
+      setProcessSnapshot(null);
+      setHistory([]);
+      setTimeline([]);
+      setStorageIo([]);
+    }
+    void setNativeMonitoringActive(monitoringActive).catch((error) => console.error('Monitoring state could not be updated:', error));
+  }, [monitoringActive]);
+  useEffect(() => {
+    if (!monitoringActive || DEMO_MODE) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const run = async () => {
+      if (coreInFlight.current) { timer = window.setTimeout(run, 250); return; }
+      coreInFlight.current = true;
+      const started = performance.now();
+      const timeout = window.setTimeout(() => {
+        if (!cancelled) raiseQueryIssue('core', 'TIMEOUT');
+      }, QUERY_TIMEOUTS.core);
+      try {
+        const next = await getCoreSnapshot();
+        if (cancelled) return;
+        clearQueryIssue('core');
+        setTelemetryError(next ? null : 'Browser preview — native telemetry waits for the desktop runtime');
+        if (next) {
+          if (coreNeedsWarmup.current) {
+            coreNeedsWarmup.current = false;
+          } else {
+            const previous = previousCoreSample.current;
+            const memory = percent(next.usedMemoryBytes, next.totalMemoryBytes);
+            if (next.cpuPercent >= 95) pushIncident('warning', 'CPU SATURATION', `Processor load reached ${next.cpuPercent.toFixed(0)}%.`, 'anomaly-cpu-high', 60_000);
+            if (memory >= 92) pushIncident('critical', 'MEMORY PRESSURE', `RAM utilization reached ${memory.toFixed(0)}%.`, 'anomaly-memory-high', 60_000);
+            if (next.gpuPercent >= 95) pushIncident('warning', 'GPU SATURATION', `Graphics load reached ${next.gpuPercent.toFixed(0)}%.`, 'anomaly-gpu-high', 60_000);
+            if (previous) {
+              const elapsedSeconds = Math.max(0.25, (next.timestampMs - previous.timestampMs) / 1_000);
+              const received = next.receivedBytes / elapsedSeconds;
+              const transmitted = next.transmittedBytes / elapsedSeconds;
+              setNetworkRates((current) => ({ received, transmitted, peak: Math.max(current.peak, received) }));
+              const previousMemory = percent(previous.usedMemoryBytes, previous.totalMemoryBytes);
+              const deviations = [
+                { label: 'CPU', value: next.cpuPercent, change: next.cpuPercent - previous.cpuPercent },
+                { label: 'RAM', value: memory, change: memory - previousMemory },
+                { label: 'GPU', value: next.gpuPercent, change: next.gpuPercent - previous.gpuPercent },
+              ];
+              deviations.forEach((deviation) => {
+                if (deviation.value >= 70 && deviation.change >= 30) pushIncident('warning', `${deviation.label} DEVIATION`, `Load jumped ${deviation.change.toFixed(0)} points to ${deviation.value.toFixed(0)}%.`, `anomaly-${deviation.label.toLowerCase()}-jump`, 45_000);
+              });
+              const network = next.receivedBytes + next.transmittedBytes;
+              const previousNetwork = previous.receivedBytes + previous.transmittedBytes;
+              if (network > 5 * 1024 * 1024 && network > Math.max(previousNetwork * 5, 1)) pushIncident('warning', 'NETWORK DEVIATION', `Interval traffic spiked to ${formatBytes(network)}.`, 'anomaly-network-jump', 45_000);
+            }
+            setCoreSnapshot(next);
+            setCoreReady(true);
+            setHistory((current) => [...current.slice(-59), next.cpuPercent]);
+            setTimeline((current) => [...current.slice(-299), { timestampMs: next.timestampMs, cpu: next.cpuPercent, memory: percent(next.usedMemoryBytes, next.totalMemoryBytes), gpu: next.gpuPercent, received: next.receivedBytes, transmitted: next.transmittedBytes }]);
+          }
+          previousCoreSample.current = next;
+        }
+      } catch (error) {
+        if (!cancelled && String(error) !== 'MONITORING_PAUSED') {
+          setTelemetryError(error instanceof Error ? error.message : String(error));
+          raiseQueryIssue('core', 'ERROR');
+        }
+      } finally {
+        window.clearTimeout(timeout);
+        coreInFlight.current = false;
+        if (!cancelled) timer = window.setTimeout(run, Math.max(0, POLL_INTERVALS.core - (performance.now() - started)));
+      }
+    };
+    void run();
+    return () => { cancelled = true; if (timer !== undefined) window.clearTimeout(timer); };
+  }, [clearQueryIssue, monitoringActive, pushIncident, raiseQueryIssue]);
+  useEffect(() => {
+    if (!monitoringActive || DEMO_MODE) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const run = async () => {
+      if (processInFlight.current) { timer = window.setTimeout(run, 250); return; }
+      processInFlight.current = true;
+      const started = performance.now();
+      const timeout = window.setTimeout(() => { if (!cancelled) raiseQueryIssue('process', 'TIMEOUT'); }, QUERY_TIMEOUTS.process);
+      try {
+        const next = await getProcessSnapshot();
+        if (cancelled) return;
+        clearQueryIssue('process');
+        if (next) {
+          if (processNeedsWarmup.current) {
+            processNeedsWarmup.current = false;
+          } else {
+            setProcessSnapshot(next);
+            setStorageIo((current) => [...current.slice(-59), { timestampMs: next.timestampMs, read: next.diskReadBytes, write: next.diskWriteBytes }]);
+          }
+        }
+      } catch (error) {
+        if (!cancelled && String(error) !== 'MONITORING_PAUSED') raiseQueryIssue('process', 'ERROR');
+      } finally {
+        window.clearTimeout(timeout);
+        processInFlight.current = false;
+        if (!cancelled) timer = window.setTimeout(run, Math.max(0, POLL_INTERVALS.process - (performance.now() - started)));
+      }
+    };
+    void run();
+    return () => { cancelled = true; if (timer !== undefined) window.clearTimeout(timer); };
+  }, [clearQueryIssue, monitoringActive, raiseQueryIssue]);
+  useEffect(() => {
+    if (!monitoringActive || DEMO_MODE) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const run = async () => {
+      if (diskInFlight.current) { timer = window.setTimeout(run, 250); return; }
+      diskInFlight.current = true;
+      const started = performance.now();
+      const timeout = window.setTimeout(() => { if (!cancelled) raiseQueryIssue('disk', 'TIMEOUT'); }, QUERY_TIMEOUTS.disk);
+      try {
+        const next = await getDiskSnapshot();
+        if (cancelled) return;
+        clearQueryIssue('disk');
+        if (next) setDiskSnapshot(next);
+      } catch (error) {
+        if (!cancelled && String(error) !== 'MONITORING_PAUSED') raiseQueryIssue('disk', 'ERROR');
+      } finally {
+        window.clearTimeout(timeout);
+        diskInFlight.current = false;
+        if (!cancelled) timer = window.setTimeout(run, Math.max(0, POLL_INTERVALS.disk - (performance.now() - started)));
+      }
+    };
+    void run();
+    return () => { cancelled = true; if (timer !== undefined) window.clearTimeout(timer); };
+  }, [clearQueryIssue, monitoringActive, raiseQueryIssue]);
+  useEffect(() => {
+    if (!monitoringActive || DEMO_MODE) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const run = async () => {
+      if (eventsInFlight.current) { timer = window.setTimeout(run, 250); return; }
+      eventsInFlight.current = true;
+      const started = performance.now();
+      const timeout = window.setTimeout(() => { if (!cancelled) raiseQueryIssue('events', 'TIMEOUT'); }, QUERY_TIMEOUTS.events);
+      try {
+        const next = await getWindowsEvents();
+        if (cancelled) return;
+        setEvents(next);
+        clearQueryIssue('events');
+        const critical = next.filter((record) => record.kind === 'critical');
+        if (criticalEventsInitialized.current) {
+          critical.filter((record) => !seenCriticalEvents.current.has(record.id)).slice(0, 4).forEach((record) => {
+            const summary = record.message.replace(/\s+/g, ' ').trim();
+            pushIncident('critical', 'WINDOWS CRITICAL', `${record.source}: ${summary.slice(0, 96)}${summary.length > 96 ? '…' : ''}`, `event-${record.id}`, 0);
+          });
+        }
+        critical.forEach((record) => seenCriticalEvents.current.add(record.id));
+        criticalEventsInitialized.current = true;
+      } catch (error) {
+        if (!cancelled && String(error) !== 'MONITORING_PAUSED') {
+          console.error('Windows events could not be read:', error);
+          raiseQueryIssue('events', 'ERROR');
+        }
+      } finally {
+        window.clearTimeout(timeout);
+        eventsInFlight.current = false;
+        if (!cancelled) timer = window.setTimeout(run, Math.max(0, POLL_INTERVALS.events - (performance.now() - started)));
+      }
+    };
+    void run();
+    return () => { cancelled = true; if (timer !== undefined) window.clearTimeout(timer); };
+  }, [clearQueryIssue, monitoringActive, pushIncident, raiseQueryIssue]);
 
   const memoryPercent = percent(snapshot?.usedMemoryBytes, snapshot?.totalMemoryBytes);
   const diskTotal = snapshot?.disks.reduce((sum, disk) => sum + disk.totalBytes, 0) ?? 0;
@@ -275,6 +568,24 @@ function App() {
       : updatePhase === 'installing' ? 'INSTALLING UPDATE'
         : updatePhase === 'checking' ? 'CHECKING UPDATE'
           : `VERSION v${appVersion}`;
+  const activeIssue = (Object.entries(queryIssues) as Array<[QueryKey, QueryIssue]>)[0];
+  const pulseState = !monitoringActive ? 'SUSPENDED' : !coreReady ? 'SYNCING' : activeIssue ? 'ABNORMAL' : snapshot ? 'NOMINAL' : 'STANDBY';
+  const pulseDetail = !monitoringActive ? 'TRAY / MINIMIZED' : activeIssue ? `${QUERY_LABELS[activeIssue[0]]} ${activeIssue[1]}` : null;
+  const telemetryOnline = pulseState === 'NOMINAL';
+  const topbarStatus = !monitoringActive ? 'MONITORING PAUSED' : pulseState === 'SYNCING' ? 'TELEMETRY SYNCING' : pulseState === 'ABNORMAL' ? 'TELEMETRY ABNORMAL' : snapshot ? 'TELEMETRY ONLINE' : 'TELEMETRY STANDBY';
+
+  useEffect(() => {
+    if (previousPulseState.current === null) {
+      previousPulseState.current = pulseState;
+      return;
+    }
+    if (previousPulseState.current === pulseState) return;
+    previousPulseState.current = pulseState;
+    if (pulseState === 'SYNCING') pushIncident('info', 'SYNCING', 'Telemetry baselines are being synchronized.', 'pulse-syncing', 0);
+    if (pulseState === 'ABNORMAL') pushIncident('critical', 'ABNORMAL', pulseDetail ? `${pulseDetail} requires attention.` : 'A monitoring channel requires attention.', 'pulse-abnormal', 0);
+    if (pulseState === 'NOMINAL') pushIncident('recovery', 'NOMINAL', 'All active monitoring channels are responding.', 'pulse-nominal', 0);
+    if (pulseState === 'SUSPENDED') pushIncident('info', 'SUSPENDED', 'Polling paused while HORUS is minimized or in the tray.', 'pulse-suspended', 0);
+  }, [pulseDetail, pulseState, pushIncident]);
 
   const handleUpdate = async () => {
     if (!isTauriRuntime() || updatePhase === 'downloading' || updatePhase === 'installing' || updatePhase === 'checking') return;
@@ -331,23 +642,23 @@ function App() {
   };
 
   return <div className={`app-shell ${decorations ? '' : 'frameless'}`}>
-    {!decorations && <>{RESIZE_HANDLES.map(([direction, className]) => <div key={direction} className={className} onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startResizeDragging(direction); }} />)}<div className="window-chrome"><button className="drag-zone" aria-label="Move window" onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startDragging(); }}><img src="/hieroglyphics.png" alt="" /></button><div className="window-controls"><button className="chrome-action minimize-window" onClick={() => isTauriRuntime() && void getCurrentWindow().minimize()} aria-label="Minimize window" title="Minimize"><WindowControlIcon type="minimize" /></button><button className="chrome-action maximize-window" onClick={() => isTauriRuntime() && void getCurrentWindow().toggleMaximize()} aria-label="Maximize window" title="Maximize"><WindowControlIcon type="maximize" /></button><button className="chrome-action close-window" onClick={() => isTauriRuntime() && void getCurrentWindow().hide()} aria-label="Close window" title="Close"><WindowControlIcon type="close" /></button></div></div></>}
+    {!decorations && <>{RESIZE_HANDLES.map(([direction, className]) => <div key={direction} className={className} onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startResizeDragging(direction); }} />)}<div className="window-chrome"><button className="drag-zone" aria-label="Move window" onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startDragging(); }}><img src="/hieroglyphics.png" alt="" /></button><div className="window-controls"><button className="chrome-action minimize-window" onClick={() => { setMonitoringActive(false); if (isTauriRuntime()) void getCurrentWindow().minimize(); }} aria-label="Minimize window" title="Minimize"><WindowControlIcon type="minimize" /></button><button className="chrome-action maximize-window" onClick={() => isTauriRuntime() && void getCurrentWindow().toggleMaximize()} aria-label="Maximize window" title="Maximize"><WindowControlIcon type="maximize" /></button><button className="chrome-action close-window" onClick={() => { setMonitoringActive(false); if (isTauriRuntime()) void getCurrentWindow().hide(); }} aria-label="Close window" title="Close"><WindowControlIcon type="close" /></button></div></div></>}
     <div className="ambient-grid" />
-    <header className="topbar"><div className="brand-block"><div className="brand-mark" tabIndex={0} aria-describedby="brand-origin"><img className="brand-icon" src="/teoh-alt02-transparent.png" alt="HORUS emblem" /><div className="brand-popover" id="brand-origin" role="tooltip"><img src="/teoh-alt02-transparent.png" alt="" /><p>It was made on Earth by two entitiy named İsmail and Codex</p></div></div><div className="brand-copy"><h1>HORUS</h1><span className="eyebrow">REAL-TIME SYSTEM OBSERVATORY</span></div></div><div className="topbar-status"><div><span className={`live-dot ${snapshot ? 'online' : ''}`} />{snapshot ? 'TELEMETRY ONLINE' : 'TELEMETRY STANDBY'}</div><time>{new Date(snapshot?.timestampMs ?? Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time><button className="settings-trigger" onClick={() => setSettingsOpen(true)}>CONTROL MATRIX</button></div></header>
+    <header className="topbar"><div className="brand-block"><div className="brand-mark" tabIndex={0} aria-describedby="brand-origin"><img className="brand-icon" src="/teoh-alt02-transparent.png" alt="HORUS emblem" /><div className="brand-popover" id="brand-origin" role="tooltip"><img src="/teoh-alt02-transparent.png" alt="" /><p>It was made on Earth by two entitiy named İsmail and Codex</p></div></div><div className="brand-copy"><h1>HORUS</h1><span className="eyebrow">REAL-TIME SYSTEM OBSERVATORY</span></div></div><div className="topbar-status"><div><span className={`live-dot ${telemetryOnline ? 'online' : ''} ${pulseState === 'ABNORMAL' ? 'abnormal' : ''}`} />{topbarStatus}</div><time>{new Date(snapshot?.timestampMs ?? Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time><button className="settings-trigger" onClick={() => setSettingsOpen(true)}>CONTROL MATRIX</button></div></header>
     <main>
-      <section className="pulse-ribbon"><div className="pulse-title"><span className={`pulse-beacon ${snapshot ? 'online' : ''}`} /><div><span>SYSTEM PULSE</span><strong>{snapshot ? 'NOMINAL' : 'STANDBY'}</strong></div></div><div className="pulse-reading host"><div className="host-copy"><span>HOST</span><strong>{snapshot?.hostName ?? '—'}</strong></div><HostHardware snapshot={snapshot} operatingSystem={snapshot?.operatingSystem ?? telemetryError ?? 'Awaiting native runtime'} visible={hostSpecsVisible} time={clockTime} onToggle={() => setHostSpecsVisible((visible) => !visible)} /></div><div className="pulse-reading"><span>UPTIME</span><strong>{snapshot ? formatUptime(snapshot.uptimeSeconds) : '—'}</strong><small>{snapshot?.processCount ?? 0} active processes</small></div><div className="pulse-reading"><span>SYSTEM LOAD</span><strong>{snapshot ? `${snapshot.cpuPercent.toFixed(0)}%` : '—'}</strong><small>{snapshot?.logicalCpuCount ?? 0} logical processors</small></div></section>
+      <section className="pulse-ribbon"><div className={`pulse-title ${pulseState.toLowerCase()}`}><span className={`pulse-beacon ${telemetryOnline ? 'online' : ''}`} /><div><span>SYSTEM PULSE</span><strong>{pulseState}</strong>{pulseDetail && <small>{pulseDetail}</small>}</div></div><div className="pulse-reading host"><div className="host-copy"><span>HOST</span><strong>{snapshot?.hostName ?? '—'}</strong></div><HostHardware snapshot={snapshot} operatingSystem={snapshot?.operatingSystem ?? telemetryError ?? 'Awaiting native runtime'} visible={hostSpecsVisible} time={clockTime} onToggle={() => setHostSpecsVisible((visible) => !visible)} /></div><div className="pulse-reading"><span>UPTIME</span><strong>{snapshot ? formatUptime(snapshot.uptimeSeconds) : '—'}</strong><small>{snapshot?.processCount ?? 0} active processes</small></div><div className="pulse-reading"><span>SYSTEM LOAD</span><strong>{snapshot ? `${snapshot.cpuPercent.toFixed(0)}%` : '—'}</strong><small>{snapshot?.logicalCpuCount ?? 0} logical processors</small></div></section>
       <section className="command-surface">
         <div className="performance-grid">
-          <section className="module cpu-module"><ModuleHeader code="PERF / 01" title="CPU Matrix" meta={<span>{snapshot?.logicalCpuCount ?? 0} CORES</span>} /><div className="cpu-layout"><MetricRing value={snapshot?.cpuPercent ?? 0} label="TOTAL LOAD" /><div className="core-grid">{(snapshot?.perCpuPercent ?? []).slice(0, 16).map((value, index) => <i key={index} title={`CPU ${index + 1}: ${value.toFixed(0)}%`} style={{ '--core-load': `${value}%` } as CSSProperties} />)}</div><div className="cpu-stream"><div className="cpu-stream-head"><span>CPU PROCESS STREAM</span><strong>{snapshot ? `${snapshot.cpuPercent.toFixed(1)}%` : '—'}</strong></div><Sparkline values={history} /></div></div></section>
+          <section className="module cpu-module"><ModuleHeader code="PERF / 01" title="CPU Matrix" meta={<span>{snapshot?.logicalCpuCount ?? 0} CORES</span>} /><div className="cpu-layout"><MetricRing value={snapshot?.cpuPercent ?? 0} label="TOTAL LOAD" /><div className="core-grid">{(snapshot?.perCpuPercent ?? []).slice(0, 16).map((value, index) => <i key={index} title={`CPU ${index + 1}: ${value.toFixed(0)}%`} style={{ '--core-load': `${value}%` } as CSSProperties} />)}</div></div></section>
           <section className="module memory-module"><ModuleHeader code="PERF / 02" title="Memory Field" meta={<span>{snapshot ? formatBytes(snapshot.totalMemoryBytes) : '—'} TOTAL</span>} /><div className="memory-layout"><div className="memory-value"><strong>{snapshot ? `${memoryPercent.toFixed(0)}%` : '—'}</strong><span>pressure</span></div><div className="segmented-bar"><i style={{ width: `${memoryPercent}%` }} /></div><div className="data-pairs"><span>Used<strong>{snapshot ? formatBytes(snapshot.usedMemoryBytes) : '—'}</strong></span><span>Available<strong>{snapshot ? formatBytes(snapshot.totalMemoryBytes - snapshot.usedMemoryBytes) : '—'}</strong></span><span>Swap<strong>{snapshot ? formatBytes(snapshot.usedSwapBytes) : '—'}</strong></span><span>Total<strong>{snapshot ? formatBytes(snapshot.totalMemoryBytes) : '—'}</strong></span></div></div></section>
-          <section className="module network-module"><ModuleHeader code="I/O / 03" title="Network Stream" meta={<span>LIVE INTERVAL</span>} /><div className="network-layout"><div><span className="direction down">↓</span><span>RECEIVED</span><strong>{snapshot ? formatBytes(snapshot.receivedBytes) : '—'}</strong></div><div><span className="direction up">↑</span><span>TRANSMITTED</span><strong>{snapshot ? formatBytes(snapshot.transmittedBytes) : '—'}</strong></div><div className="traffic-line"><i /><i /><i /><i /><i /><i /></div></div></section>
+          <section className="module network-module"><ModuleHeader code="I/O / 03" title="Network Stream" meta={<span>LIVE INTERVAL</span>} /><div className="network-layout"><div><span className="direction peak">◆</span><span>PEAK</span><strong>{snapshot ? formatRate(networkRates.peak) : '—'}</strong></div><div><span className="direction down">↓</span><span>RECEIVED</span><strong>{snapshot ? formatRate(networkRates.received) : '—'}</strong></div><div><span className="direction up">↑</span><span>TRANSMITTED</span><strong>{snapshot ? formatRate(networkRates.transmitted) : '—'}</strong></div><div className="traffic-line"><i /><i /><i /><i /><i /><i /></div></div></section>
         </div>
         <div className="storage-row">
-          <section className="module storage-module"><ModuleHeader code="STORAGE / 04" title="Storage Array" meta={<span>{diskTotal ? 'LIVE ARRAY' : 'AWAITING DATA'}</span>} /><StorageIoStream samples={storageIo} /><div className="array-utilization"><span>ARRAY UTILIZATION</span><strong>{diskTotal ? `${percent(diskUsed, diskTotal).toFixed(0)}%` : '—'}</strong></div><div className="disk-grid">{sortedDisks.length ? sortedDisks.map((disk) => { const used = percent(disk.totalBytes - disk.availableBytes, disk.totalBytes); return <div className="disk-row" key={`${disk.name}-${disk.mountPoint}`}><div><strong>{disk.mountPoint || disk.name}</strong><span>{formatBytes(disk.totalBytes - disk.availableBytes)} / {formatBytes(disk.totalBytes)}</span></div><div className="thin-bar"><i style={{ width: `${used}%` }} /></div><b>{used.toFixed(0)}%</b></div>; }) : <EmptyState text="No storage telemetry received." />}</div></section>
-          <TelemetryTimeline samples={timeline} range={timelineRange} setRange={setTimelineRange} enabled={timelineSeries} toggleSeries={(series) => setTimelineSeries((current) => ({ ...current, [series]: !current[series] }))} />
+          <section className="module storage-module"><ModuleHeader code="STORAGE / 04" title="Storage Array" meta={<span>{diskTotal ? 'LIVE ARRAY' : 'AWAITING DATA'}</span>} /><StorageIoStream samples={storageIo} fault={Boolean(queryIssues.process)} /><div className="array-utilization"><span>ARRAY UTILIZATION</span><strong>{diskTotal ? `${percent(diskUsed, diskTotal).toFixed(0)}%` : '—'}</strong></div><div className="disk-grid">{sortedDisks.length ? sortedDisks.map((disk) => { const used = percent(disk.totalBytes - disk.availableBytes, disk.totalBytes); return <div className="disk-row" key={`${disk.name}-${disk.mountPoint}`}><div><strong>{disk.mountPoint || disk.name}</strong><span>{formatBytes(disk.totalBytes - disk.availableBytes)} / {formatBytes(disk.totalBytes)}</span></div><div className="thin-bar"><i style={{ width: `${used}%` }} /></div><b>{used.toFixed(0)}%</b></div>; }) : <EmptyState text="No storage telemetry received." />}</div></section>
+          <TelemetryTimeline samples={timeline} range={timelineRange} setRange={setTimelineRange} enabled={timelineSeries} toggleSeries={(series) => setTimelineSeries((current) => ({ ...current, [series]: !current[series] }))} fault={Boolean(queryIssues.core)} />
         </div>
         <div className="operations-grid">
-          <section className="module process-module"><ModuleHeader code="ACTIVITY / 06" title="Process Flow" meta={<span>{snapshot?.processCount ?? 0} ACTIVE</span>} /><div className="process-list"><div className="list-head"><span>PROCESS</span><span>CPU</span><span>MEMORY</span><span>PID</span></div>{snapshot?.topProcesses.length ? snapshot.topProcesses.map((process) => <div className="process-row" key={process.pid}><span><i />{process.name}</span><strong>{process.cpuPercent.toFixed(1)}%</strong><strong>{formatBytes(process.memoryBytes)}</strong><code>{process.pid}</code></div>) : <EmptyState text="Native process stream is waiting for the desktop runtime." />}</div></section>
+          <section className="module process-module"><ModuleHeader code="ACTIVITY / 06" title="Process Flow" meta={<span>{snapshot?.processCount ?? 0} ACTIVE</span>} /><div className="process-list"><div className="list-head"><span>PROCESS</span><span>CPU</span><span>MEMORY</span><span>PID</span></div>{snapshot?.topProcesses.length ? snapshot.topProcesses.map((process) => <div className="process-row" key={process.pid}><span><i />{process.name}</span><strong>{process.cpuPercent.toFixed(1)}%</strong><strong>{formatBytes(process.memoryBytes)}</strong><code>{process.pid}</code></div>) : <EmptyState text="Native process stream is waiting for the desktop runtime." />}</div><IncidentStream incidents={incidents} /></section>
           <section className="module events-module"><ModuleHeader code="WINDOWS / 07" title="System Events" meta={<span>LIVE EVENT LOG</span>} /><div className="event-filters" role="tablist" aria-label="Event category">{EVENT_FILTERS.map((filter) => <button key={filter.id} className={`${filter.id} ${eventFilter === filter.id ? 'active' : ''}`} onClick={() => { setEventFilter(filter.id); setEventTooltip(null); }} role="tab" aria-selected={eventFilter === filter.id}><span>{filter.label}</span><strong>{events.filter((event) => event.kind === filter.id).length}</strong></button>)}</div><div className="event-list" onScroll={() => setEventTooltip(null)}>{filteredEvents.length ? filteredEvents.map((record) => <article className={`event-row ${record.kind}`} key={record.id} tabIndex={0} onMouseEnter={(event) => showEventTooltip(event.currentTarget, record)} onMouseLeave={() => setEventTooltip(null)} onFocus={(event) => showEventTooltip(event.currentTarget, record)} onBlur={() => setEventTooltip(null)}><i /><div><strong>{record.source}</strong><p>{record.message}</p></div><time>{new Date(record.timestamp).toLocaleString()}</time></article>) : <div className="event-empty"><span>NO RECENT RECORDS</span><strong>{EVENT_FILTERS.find((filter) => filter.id === eventFilter)?.label} channel is clear</strong><p>Windows Event Log is active. New matching records will appear automatically.</p></div>}</div></section>
         </div>
       </section>
