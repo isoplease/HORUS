@@ -1,5 +1,6 @@
 {
   "name": "horus-command-deck",
+  "description": "A real-time Windows telemetry dashboard and system observatory.",
   "private": true,
   "version": "0.2.28",
   "packageManager": "pnpm@11.19.0",
