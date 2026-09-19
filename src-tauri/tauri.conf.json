@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "HORUS",
-  "version": "0.2.26",
+  "version": "0.2.28",
   "identifier": "com.isoplease.horus",
   "build": {
     "beforeDevCommand": "pnpm run dev",
@@ -45,7 +45,7 @@
     "createUpdaterArtifacts": true,
     "targets": ["nsis"],
     "publisher": "isoplease",
-    "shortDescription": "Real-time Windows system observatory",
+    "shortDescription": "Real-time Windows telemetry and diagnostics dashboard",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
