@@ -71,7 +71,7 @@ function Sparkline({ values, color = 'var(--chart)' }: { values: number[]; color
   return <svg className="sparkline" viewBox="0 0 100 50" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id="spark-fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={color} stopOpacity="0.32" /><stop offset="1" stopColor={color} stopOpacity="0" /></linearGradient></defs><path className="spark-grid" d="M0 10H100M0 28H100M25 0V50M50 0V50M75 0V50" /><polygon points={`0,50 ${coordinates} 100,50`} fill="url(#spark-fade)" /><polyline points={coordinates} fill="none" stroke={color} strokeWidth="1.6" vectorEffect="non-scaling-stroke" /></svg>;
 }
 
-function TelemetryTimeline({ samples, range, setRange, enabled, toggleSeries, fault }: { samples: TelemetryPoint[]; range: TimelineRange; setRange: (range: TimelineRange) => void; enabled: Record<TimelineSeries, boolean>; toggleSeries: (series: TimelineSeries) => void; fault: boolean }) {
+function TelemetryTimeline({ samples, range, setRange, enabled, toggleSeries, fault, time }: { samples: TelemetryPoint[]; range: TimelineRange; setRange: (range: TimelineRange) => void; enabled: Record<TimelineSeries, boolean>; toggleSeries: (series: TimelineSeries) => void; fault: boolean; time: Date }) {
   const visible = samples.slice(-range);
   const offset = Math.max(0, range - visible.length);
   const xAt = (index: number) => ((offset + index) / Math.max(1, range - 1)) * 1000;
@@ -88,11 +88,27 @@ function TelemetryTimeline({ samples, range, setRange, enabled, toggleSeries, fa
       return sample[series] >= 65 && change >= 18 ? [{ series, value: sample[series], timestampMs: sample.timestampMs, x: xAt(index), y: yAt(sample[series]) }] : [];
     });
   }).slice(-3);
+  const spikeLabels = spikes.map((spike) => ({ ...spike, left: Math.min(94, Math.max(4, spike.x / 10)), top: Math.max(32, spike.y - 2) })).sort((left, right) => left.left - right.left);
+  for (let start = 0; start < spikeLabels.length;) {
+    let end = start + 1;
+    while (end < spikeLabels.length && spikeLabels[end].left - spikeLabels[end - 1].left < 10) end += 1;
+    const count = end - start;
+    if (count > 1) {
+      const group = spikeLabels.slice(start, end);
+      const spacing = 9;
+      const center = group.reduce((total, spike) => total + spike.left, 0) / count;
+      let first = center - spacing * (count - 1) / 2;
+      first = Math.max(4, Math.min(first, 94 - spacing * (count - 1)));
+      const alignedTop = Math.max(...group.map((spike) => spike.top));
+      group.forEach((spike, index) => { spike.left = first + index * spacing; spike.top = alignedTop; });
+    }
+    start = end;
+  }
   const latest = visible.at(-1);
 
   return <section className="module telemetry-module">
     <header className="timeline-header"><div><span>TELEMETRY / 05</span><h2>Telemetry Timeline</h2></div><div className="timeline-ranges" aria-label="Telemetry time range">{TIMELINE_RANGES.map((option) => <button key={option.value} className={range === option.value ? 'active' : ''} onClick={() => setRange(option.value)} aria-pressed={range === option.value}>{option.label}</button>)}</div></header>
-    <div className="timeline-series" aria-label="Visible telemetry series">{TIMELINE_SERIES.map((series) => <button key={series.id} className={`${series.id} ${enabled[series.id] ? 'active' : ''}`} onClick={() => toggleSeries(series.id)} aria-pressed={enabled[series.id]}><i />{series.label}<small>{series.id === 'network' ? formatBytes(Math.max(latest?.received ?? 0, latest?.transmitted ?? 0)) : `${(latest?.[series.id] ?? 0).toFixed(0)}%`}</small></button>)}</div>
+    <div className="timeline-series" aria-label="Visible telemetry series">{TIMELINE_SERIES.map((series) => <button key={series.id} className={`${series.id} ${enabled[series.id] ? 'active' : ''}`} onClick={() => toggleSeries(series.id)} aria-pressed={enabled[series.id]}><i />{series.label}<small>{series.id === 'network' ? formatBytes(Math.max(latest?.received ?? 0, latest?.transmitted ?? 0)) : `${(latest?.[series.id] ?? 0).toFixed(0)}%`}</small></button>)}<time className="timeline-clock">{time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time></div>
     <div className="timeline-chart" role="img" aria-label={`CPU, memory, GPU and network activity for the last ${range} seconds`}>
       <svg viewBox="0 0 1000 100" preserveAspectRatio="none" aria-hidden="true">
         <defs><filter id="timeline-glow"><feGaussianBlur stdDeviation="2.2" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter></defs>
@@ -102,7 +118,8 @@ function TelemetryTimeline({ samples, range, setRange, enabled, toggleSeries, fa
         {enabled.memory && visible.length > 1 && <polyline className="timeline-line memory" points={pointsFor('memory')} />}
         {enabled.gpu && visible.length > 1 && <polyline className="timeline-line gpu" points={pointsFor('gpu')} />}
       </svg>
-      {spikes.map((spike) => <span className={`spike-label ${spike.series}`} key={`${spike.series}-${spike.timestampMs}`} style={{ left: `${Math.min(94, Math.max(4, spike.x / 10))}%`, top: `${Math.max(25, spike.y - 2)}%` }}><b>{new Date(spike.timestampMs).toLocaleTimeString([], { minute: '2-digit', second: '2-digit' })}</b>{spike.value.toFixed(0)}%</span>)}
+      <div className="timeline-y-axis" aria-hidden="true"><span>100%</span><span>50%</span><span>0%</span></div>
+      {spikeLabels.map((spike) => <span className={`spike-label ${spike.series}`} key={`${spike.series}-${spike.timestampMs}`} style={{ left: `${spike.left}%`, top: `${spike.top}%` }}><b>{new Date(spike.timestampMs).toLocaleTimeString([], { minute: '2-digit', second: '2-digit' })}</b>{spike.value.toFixed(0)}%</span>)}
       {fault && <span className="query-fault-marker" title="Core telemetry query stalled">/</span>}
       {!visible.length && <span className="timeline-waiting">AWAITING TELEMETRY STREAM</span>}
       <div className="timeline-axis"><span>-{range === 300 ? '5m' : `${range}s`}</span><span>NOW</span></div>
@@ -644,7 +661,7 @@ function App() {
   return <div className={`app-shell ${decorations ? '' : 'frameless'}`}>
     {!decorations && <>{RESIZE_HANDLES.map(([direction, className]) => <div key={direction} className={className} onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startResizeDragging(direction); }} />)}<div className="window-chrome"><button className="drag-zone" aria-label="Move window" onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startDragging(); }}><img src="/hieroglyphics.png" alt="" /></button><div className="window-controls"><button className="chrome-action minimize-window" onClick={() => { setMonitoringActive(false); if (isTauriRuntime()) void getCurrentWindow().minimize(); }} aria-label="Minimize window" title="Minimize"><WindowControlIcon type="minimize" /></button><button className="chrome-action maximize-window" onClick={() => isTauriRuntime() && void getCurrentWindow().toggleMaximize()} aria-label="Maximize window" title="Maximize"><WindowControlIcon type="maximize" /></button><button className="chrome-action close-window" onClick={() => { setMonitoringActive(false); if (isTauriRuntime()) void getCurrentWindow().hide(); }} aria-label="Close window" title="Close"><WindowControlIcon type="close" /></button></div></div></>}
     <div className="ambient-grid" />
-    <header className="topbar"><div className="brand-block"><div className="brand-mark" tabIndex={0} aria-describedby="brand-origin"><img className="brand-icon" src="/teoh-alt02-transparent.png" alt="HORUS emblem" /><div className="brand-popover" id="brand-origin" role="tooltip"><img src="/teoh-alt02-transparent.png" alt="" /><p>It was made on Earth by two entitiy named İsmail and Codex</p></div></div><div className="brand-copy"><h1>HORUS</h1><span className="eyebrow">REAL-TIME SYSTEM OBSERVATORY</span></div></div><div className="topbar-status"><div><span className={`live-dot ${telemetryOnline ? 'online' : ''} ${pulseState === 'ABNORMAL' ? 'abnormal' : ''}`} />{topbarStatus}</div><time>{new Date(snapshot?.timestampMs ?? Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time><button className="settings-trigger" onClick={() => setSettingsOpen(true)}>CONTROL MATRIX</button></div></header>
+    <header className="topbar"><div className="brand-block"><div className="brand-mark" tabIndex={0} aria-describedby="brand-origin"><img className="brand-icon" src="/teoh-alt02-transparent.png" alt="HORUS emblem" /><div className="brand-popover" id="brand-origin" role="tooltip"><img src="/teoh-alt02-transparent.png" alt="" /><p>It was made on Earth by two entitiy named İsmail and Codex</p></div></div><div className="brand-copy"><h1>HORUS</h1><span className="eyebrow">REAL-TIME SYSTEM OBSERVATORY</span></div></div><div className="topbar-status"><div><span className={`live-dot ${telemetryOnline ? 'online' : ''} ${pulseState === 'ABNORMAL' ? 'abnormal' : ''}`} />{topbarStatus}</div><button className="settings-trigger" onClick={() => setSettingsOpen(true)}>CONTROL MATRIX</button></div></header>
     <main>
       <section className="pulse-ribbon"><div className={`pulse-title ${pulseState.toLowerCase()}`}><span className={`pulse-beacon ${telemetryOnline ? 'online' : ''}`} /><div><span>SYSTEM PULSE</span><strong>{pulseState}</strong>{pulseDetail && <small>{pulseDetail}</small>}</div></div><div className="pulse-reading host"><div className="host-copy"><span>HOST</span><strong>{snapshot?.hostName ?? '—'}</strong></div><HostHardware snapshot={snapshot} operatingSystem={snapshot?.operatingSystem ?? telemetryError ?? 'Awaiting native runtime'} visible={hostSpecsVisible} time={clockTime} onToggle={() => setHostSpecsVisible((visible) => !visible)} /></div><div className="pulse-reading"><span>UPTIME</span><strong>{snapshot ? formatUptime(snapshot.uptimeSeconds) : '—'}</strong><small>{snapshot?.processCount ?? 0} active processes</small></div><div className="pulse-reading"><span>SYSTEM LOAD</span><strong>{snapshot ? `${snapshot.cpuPercent.toFixed(0)}%` : '—'}</strong><small>{snapshot?.logicalCpuCount ?? 0} logical processors</small></div></section>
       <section className="command-surface">
@@ -655,7 +672,7 @@ function App() {
         </div>
         <div className="storage-row">
           <section className="module storage-module"><ModuleHeader code="STORAGE / 04" title="Storage Array" meta={<span>{diskTotal ? 'LIVE ARRAY' : 'AWAITING DATA'}</span>} /><StorageIoStream samples={storageIo} fault={Boolean(queryIssues.process)} /><div className="array-utilization"><span>ARRAY UTILIZATION</span><strong>{diskTotal ? `${percent(diskUsed, diskTotal).toFixed(0)}%` : '—'}</strong></div><div className="disk-grid">{sortedDisks.length ? sortedDisks.map((disk) => { const used = percent(disk.totalBytes - disk.availableBytes, disk.totalBytes); return <div className="disk-row" key={`${disk.name}-${disk.mountPoint}`}><div><strong>{disk.mountPoint || disk.name}</strong><span>{formatBytes(disk.totalBytes - disk.availableBytes)} / {formatBytes(disk.totalBytes)}</span></div><div className="thin-bar"><i style={{ width: `${used}%` }} /></div><b>{used.toFixed(0)}%</b></div>; }) : <EmptyState text="No storage telemetry received." />}</div></section>
-          <TelemetryTimeline samples={timeline} range={timelineRange} setRange={setTimelineRange} enabled={timelineSeries} toggleSeries={(series) => setTimelineSeries((current) => ({ ...current, [series]: !current[series] }))} fault={Boolean(queryIssues.core)} />
+          <TelemetryTimeline samples={timeline} range={timelineRange} setRange={setTimelineRange} enabled={timelineSeries} toggleSeries={(series) => setTimelineSeries((current) => ({ ...current, [series]: !current[series] }))} fault={Boolean(queryIssues.core)} time={clockTime} />
         </div>
         <div className="operations-grid">
           <section className="module process-module"><ModuleHeader code="ACTIVITY / 06" title="Process Flow" meta={<span>{snapshot?.processCount ?? 0} ACTIVE</span>} /><div className="process-list"><div className="list-head"><span>PROCESS</span><span>CPU</span><span>MEMORY</span><span>PID</span></div>{snapshot?.topProcesses.length ? snapshot.topProcesses.map((process) => <div className="process-row" key={process.pid}><span><i />{process.name}</span><strong>{process.cpuPercent.toFixed(1)}%</strong><strong>{formatBytes(process.memoryBytes)}</strong><code>{process.pid}</code></div>) : <EmptyState text="Native process stream is waiting for the desktop runtime." />}</div><IncidentStream incidents={incidents} /></section>
