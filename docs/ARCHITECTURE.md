@@ -9,7 +9,7 @@ Native data is split by cost and cadence:
 - Core telemetry: CPU, per-core load, memory, GPU and network
 - Process telemetry: process activity and storage I/O
 - Capacity telemetry: mounted disk usage
-- Event telemetry: bounded Windows Event Log records
+- Event telemetry: bounded, curated Windows Event Log records grouped by channel, provider and event ID
 
 Each channel has its own interval, timeout and in-flight guard. Minimized or tray-hidden windows stop polling and GPU sampling. Restoring the window starts a fresh baseline so paused time does not distort rate calculations.
 
