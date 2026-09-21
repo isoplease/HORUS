@@ -14,14 +14,21 @@ export interface DiskSample {
   availableBytes: number;
 }
 
-export type EventKind = 'critical' | 'error' | 'warning' | 'application';
+export type EventSeverity = 'critical' | 'error' | 'warning';
+export type EventCategory = 'hardware' | 'os' | 'app';
+export type EventFilter = 'all' | 'critical' | EventCategory;
 
 export interface WindowsEventRecord {
   id: string;
-  kind: EventKind;
+  kind: EventSeverity;
+  category: EventCategory;
+  eventId: string;
+  channel: string;
   source: string;
+  summary: string;
   message: string;
   timestamp: string;
+  count: number;
 }
 
 export interface CoreSnapshot {

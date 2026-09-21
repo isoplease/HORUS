@@ -12,7 +12,7 @@ HORUS is a real-time Windows telemetry and diagnostics dashboard built with Taur
 - Live network receive, transmit and session peak rates
 - Multi-series telemetry timeline with spike markers
 - Top-process CPU and memory activity
-- Filtered Windows Event Log viewer
+- Curated Windows Event Log viewer with severity/category filters and repeat grouping
 - Incident Stream for timeouts, anomalies, critical events and recovery states
 - Automatic polling suspension while minimized or in the system tray
 - Host hardware summary, binary clock and persistent appearance settings

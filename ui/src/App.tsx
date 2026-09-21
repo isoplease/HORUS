@@ -6,7 +6,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { disable as disableAutostart, enable as enableAutostart, isEnabled as isAutostartEnabled } from '@tauri-apps/plugin-autostart';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { getCoreSnapshot, getDiskSnapshot, getProcessSnapshot, getWindowsEvents, isTauriRuntime, setMonitoringActive as setNativeMonitoringActive } from './telemetry';
-import type { CoreSnapshot, DiskSnapshot, EventKind, ProcessSnapshot, SystemSnapshot, ThemeSettings, WindowsEventRecord } from './types';
+import type { CoreSnapshot, DiskSnapshot, EventFilter, ProcessSnapshot, SystemSnapshot, ThemeSettings, WindowsEventRecord } from './types';
 
 const THEME_KEY = 'horus-theme-v1';
 const FRAME_KEY = 'horus-window-frame-v1';
@@ -29,8 +29,8 @@ const RESIZE_HANDLES = [
   ['NorthWest', 'resize-edge resize-nw'], ['NorthEast', 'resize-edge resize-ne'], ['SouthWest', 'resize-edge resize-sw'], ['SouthEast', 'resize-edge resize-se'],
 ] as const;
 
-const EVENT_FILTERS: Array<{ id: EventKind; label: string }> = [
-  { id: 'critical', label: 'Critical' }, { id: 'error', label: 'Error' }, { id: 'warning', label: 'Warnings' }, { id: 'application', label: 'Application' },
+const EVENT_FILTERS: Array<{ id: EventFilter; label: string }> = [
+  { id: 'all', label: 'ALL' }, { id: 'critical', label: 'CRITICAL' }, { id: 'hardware', label: 'HARDWARE' }, { id: 'os', label: 'OS' }, { id: 'app', label: 'APP' },
 ];
 
 type UpdatePhase = 'idle' | 'checking' | 'current' | 'available' | 'downloading' | 'installing' | 'error';
@@ -256,7 +256,7 @@ function App() {
   const [windowDragging, setWindowDragging] = useState(false);
   const [autostart, setAutostart] = useState(false);
   const [autostartBusy, setAutostartBusy] = useState(false);
-  const [eventFilter, setEventFilter] = useState<EventKind>('warning');
+  const [eventFilter, setEventFilter] = useState<EventFilter>('all');
   const [events, setEvents] = useState<WindowsEventRecord[]>([]);
   const [clockTime, setClockTime] = useState(() => new Date());
   const [appVersion, setAppVersion] = useState('DEV');
@@ -265,7 +265,8 @@ function App() {
   const [updateProgress, setUpdateProgress] = useState(0);
   const [eventTooltip, setEventTooltip] = useState<EventTooltip | null>(null);
   const [hostSpecsVisible, setHostSpecsVisible] = useState(() => localStorage.getItem(HOST_SPECS_KEY) !== 'false');
-  const [monitoringActive, setMonitoringActive] = useState(() => !isTauriRuntime());
+  const [windowMonitoringActive, setWindowMonitoringActive] = useState(() => !isTauriRuntime());
+  const [manualPause, setManualPause] = useState(false);
   const [coreReady, setCoreReady] = useState(() => !isTauriRuntime());
   const [queryIssues, setQueryIssues] = useState<Partial<Record<QueryKey, QueryIssue>>>({});
   const [incidents, setIncidents] = useState<IncidentItem[]>([]);
@@ -282,6 +283,7 @@ function App() {
   const seenCriticalEvents = useRef(new Set<string>());
   const criticalEventsInitialized = useRef(false);
   const previousPulseState = useRef<string | null>(null);
+  const monitoringActive = windowMonitoringActive && !manualPause;
 
   const pushIncident = useCallback((level: IncidentLevel, code: string, message: string, fingerprint = `${code}:${message}`, cooldownMs = 30_000) => {
     const now = Date.now();
@@ -348,9 +350,9 @@ function App() {
     setTimeline(samples);
     setStorageIo(samples.map((sample, index) => ({ timestampMs: sample.timestampMs, read: 8_000_000 + Math.abs(Math.sin(index / 4)) * 42_000_000, write: 3_000_000 + Math.abs(Math.cos(index / 5)) * 18_000_000 })));
     setEvents([
-      { id: 'demo-warning', kind: 'warning', source: 'Display', message: 'Display driver response briefly exceeded the expected interval.', timestamp: new Date(now - 92_000).toISOString() },
-      { id: 'demo-critical', kind: 'critical', source: 'Kernel-Power', message: 'Test critical event generated for the HORUS diagnostics preview.', timestamp: new Date(now - 420_000).toISOString() },
-      { id: 'demo-application', kind: 'application', source: 'HORUS', message: 'Native telemetry channels initialized successfully.', timestamp: new Date(now - 18_000).toISOString() },
+      { id: 'demo-warning', kind: 'warning', category: 'hardware', eventId: '4101', channel: 'System', source: 'Display', summary: 'Display driver stopped responding and recovered.', message: 'Display driver response briefly exceeded the expected interval.', timestamp: new Date(now - 92_000).toISOString(), count: 2 },
+      { id: 'demo-critical', kind: 'critical', category: 'os', eventId: '41', channel: 'System', source: 'Kernel-Power', summary: 'The system restarted without a clean shutdown.', message: 'Test critical event generated for the HORUS diagnostics preview.', timestamp: new Date(now - 420_000).toISOString(), count: 1 },
+      { id: 'demo-application', kind: 'warning', category: 'app', eventId: '1000', channel: 'Application', source: 'HORUS', summary: 'Application warning reported by HORUS.', message: 'Native telemetry channels initialized successfully.', timestamp: new Date(now - 18_000).toISOString(), count: 1 },
     ]);
     incidentCounter.current = 3;
     setIncidents([
@@ -410,7 +412,7 @@ function App() {
     let disposed = false;
     const unlisteners: UnlistenFn[] = [];
     const appWindow = getCurrentWindow();
-    const applyState = (active: boolean) => { if (!disposed) setMonitoringActive(active); };
+    const applyState = (active: boolean) => { if (!disposed) setWindowMonitoringActive(active); };
     const syncWindowState = async () => applyState(await appWindow.isVisible() && !await appWindow.isMinimized());
     void listen<boolean>('monitoring-state', (event) => applyState(event.payload)).then((unlisten) => disposed ? unlisten() : unlisteners.push(unlisten));
     void appWindow.onResized(() => { void syncWindowState(); }).then((unlisten) => disposed ? unlisten() : unlisteners.push(unlisten));
@@ -595,15 +597,19 @@ function App() {
   const diskTotal = snapshot?.disks.reduce((sum, disk) => sum + disk.totalBytes, 0) ?? 0;
   const diskUsed = snapshot?.disks.reduce((sum, disk) => sum + disk.totalBytes - disk.availableBytes, 0) ?? 0;
   const sortedDisks = useMemo(() => [...(snapshot?.disks ?? [])].sort((left, right) => (left.mountPoint || left.name).localeCompare(right.mountPoint || right.name)), [snapshot?.disks]);
-  const filteredEvents = useMemo(() => events.filter((event) => event.kind === eventFilter), [eventFilter, events]);
+  const filteredEvents = useMemo(() => events.filter((event) => eventFilter === 'all' || (eventFilter === 'critical' ? event.kind === 'critical' : event.category === eventFilter)), [eventFilter, events]);
+  const eventFilterCount = useCallback((filter: EventFilter) => events.reduce((total, event) => {
+    const matches = filter === 'all' || (filter === 'critical' ? event.kind === 'critical' : event.category === filter);
+    return total + (matches ? event.count : 0);
+  }, 0), [events]);
   const updateLabel = updatePhase === 'available' && availableUpdate ? `UPDATE v${availableUpdate.version}`
     : updatePhase === 'downloading' ? `DOWNLOADING ${updateProgress}%`
       : updatePhase === 'installing' ? 'INSTALLING UPDATE'
         : updatePhase === 'checking' ? 'CHECKING UPDATE'
           : `VERSION v${appVersion}`;
   const activeIssue = (Object.entries(queryIssues) as Array<[QueryKey, QueryIssue]>)[0];
-  const pulseState = !monitoringActive ? 'SUSPENDED' : !coreReady ? 'SYNCING' : activeIssue ? 'ABNORMAL' : snapshot ? 'NOMINAL' : 'STANDBY';
-  const pulseDetail = !monitoringActive ? 'TRAY / MINIMIZED' : activeIssue ? `${QUERY_LABELS[activeIssue[0]]} ${activeIssue[1]}` : null;
+  const pulseState = manualPause ? 'PAUSED' : !windowMonitoringActive ? 'SUSPENDED' : !coreReady ? 'SYNCING' : activeIssue ? 'ABNORMAL' : snapshot ? 'NOMINAL' : 'STANDBY';
+  const pulseDetail = manualPause ? 'MANUAL CONTROL' : !windowMonitoringActive ? 'TRAY / MINIMIZED' : activeIssue ? `${QUERY_LABELS[activeIssue[0]]} ${activeIssue[1]}` : null;
   const telemetryOnline = pulseState === 'NOMINAL';
   const topbarStatus = !monitoringActive ? 'MONITORING PAUSED' : pulseState === 'SYNCING' ? 'TELEMETRY SYNCING' : pulseState === 'ABNORMAL' ? 'TELEMETRY ABNORMAL' : snapshot ? 'TELEMETRY ONLINE' : 'TELEMETRY STANDBY';
 
@@ -617,6 +623,7 @@ function App() {
     if (pulseState === 'SYNCING') pushIncident('info', 'SYNCING', 'Telemetry baselines are being synchronized.', 'pulse-syncing', 0);
     if (pulseState === 'ABNORMAL') pushIncident('critical', 'ABNORMAL', pulseDetail ? `${pulseDetail} requires attention.` : 'A monitoring channel requires attention.', 'pulse-abnormal', 0);
     if (pulseState === 'NOMINAL') pushIncident('recovery', 'NOMINAL', 'All active monitoring channels are responding.', 'pulse-nominal', 0);
+    if (pulseState === 'PAUSED') pushIncident('info', 'PAUSED', 'All telemetry queries were paused from System Pulse.', 'pulse-paused', 0);
     if (pulseState === 'SUSPENDED') pushIncident('info', 'SUSPENDED', 'Polling paused while HORUS is minimized or in the tray.', 'pulse-suspended', 0);
   }, [pulseDetail, pulseState, pushIncident]);
 
@@ -682,11 +689,11 @@ function App() {
   };
 
   return <div className={`app-shell ${decorations ? '' : 'frameless'}`}>
-    {!decorations && <>{RESIZE_HANDLES.map(([direction, className]) => <div key={direction} className={className} onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startResizeDragging(direction); }} />)}<div className="window-chrome"><button className={`drag-zone ${windowDragging ? 'is-dragging' : ''}`} aria-label="Move window" onMouseDown={(event) => void handleWindowDrag(event)}><span className={`hieroglyph-track ${!hieroglyphMotion || windowDragging ? 'is-paused' : ''}`} style={{ '--hieroglyph-duration': `${48 * 100 / hieroglyphSpeed}s` } as CSSProperties} aria-hidden="true"><img src="/hieroglyphics.png" alt="" /><img src="/hieroglyphics.png" alt="" /></span></button><div className="window-controls"><button className="chrome-action minimize-window" onClick={() => { setMonitoringActive(false); if (isTauriRuntime()) void getCurrentWindow().minimize(); }} aria-label="Minimize window" title="Minimize"><WindowControlIcon type="minimize" /></button><button className="chrome-action maximize-window" onClick={() => isTauriRuntime() && void getCurrentWindow().toggleMaximize()} aria-label="Maximize window" title="Maximize"><WindowControlIcon type="maximize" /></button><button className="chrome-action close-window" onClick={() => { setMonitoringActive(false); if (isTauriRuntime()) void getCurrentWindow().hide(); }} aria-label="Close window" title="Close"><WindowControlIcon type="close" /></button></div></div></>}
+    {!decorations && <>{RESIZE_HANDLES.map(([direction, className]) => <div key={direction} className={className} onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startResizeDragging(direction); }} />)}<div className="window-chrome"><button className={`drag-zone ${windowDragging ? 'is-dragging' : ''}`} aria-label="Move window" onMouseDown={(event) => void handleWindowDrag(event)}><span className={`hieroglyph-track ${!hieroglyphMotion || windowDragging ? 'is-paused' : ''}`} style={{ '--hieroglyph-duration': `${48 * 100 / hieroglyphSpeed}s` } as CSSProperties} aria-hidden="true"><img src="/hieroglyphics.png" alt="" /><img src="/hieroglyphics.png" alt="" /></span></button><div className="window-controls"><button className="chrome-action minimize-window" onClick={() => { setWindowMonitoringActive(false); if (isTauriRuntime()) void getCurrentWindow().minimize(); }} aria-label="Minimize window" title="Minimize"><WindowControlIcon type="minimize" /></button><button className="chrome-action maximize-window" onClick={() => isTauriRuntime() && void getCurrentWindow().toggleMaximize()} aria-label="Maximize window" title="Maximize"><WindowControlIcon type="maximize" /></button><button className="chrome-action close-window" onClick={() => { setWindowMonitoringActive(false); if (isTauriRuntime()) void getCurrentWindow().hide(); }} aria-label="Close window" title="Close"><WindowControlIcon type="close" /></button></div></div></>}
     <div className="ambient-grid" />
     <header className="topbar"><div className="brand-block"><div className="brand-mark" tabIndex={0} aria-describedby="brand-origin"><img className="brand-icon" src="/teoh-alt02-transparent.png" alt="HORUS emblem" /><div className="brand-popover" id="brand-origin" role="tooltip"><img src="/teoh-alt02-transparent.png" alt="" /><p>It was made on Earth by two entitiy named İsmail and Codex</p></div></div><div className="brand-copy"><h1>HORUS</h1><span className="eyebrow">REAL-TIME SYSTEM OBSERVATORY</span></div></div><div className="topbar-status"><div><span className={`live-dot ${telemetryOnline ? 'online' : ''} ${pulseState === 'ABNORMAL' ? 'abnormal' : ''}`} />{topbarStatus}</div><button className="settings-trigger" onClick={() => setSettingsOpen(true)}>CONTROL MATRIX</button></div></header>
     <main>
-      <section className="pulse-ribbon"><div className={`pulse-title ${pulseState.toLowerCase()}`}><span className={`pulse-beacon ${telemetryOnline ? 'online' : ''}`} /><div><span>SYSTEM PULSE</span><strong>{pulseState}</strong>{pulseDetail && <small>{pulseDetail}</small>}</div></div><div className="pulse-reading host"><div className="host-copy"><span>HOST</span><strong>{snapshot?.hostName ?? '—'}</strong></div><HostHardware snapshot={snapshot} operatingSystem={snapshot?.operatingSystem ?? telemetryError ?? 'Awaiting native runtime'} visible={hostSpecsVisible} time={clockTime} onToggle={() => setHostSpecsVisible((visible) => !visible)} /></div><div className="pulse-reading"><span>UPTIME</span><strong>{snapshot ? formatUptime(snapshot.uptimeSeconds) : '—'}</strong><small>{snapshot?.processCount ?? 0} active processes</small></div><div className="pulse-reading"><span>SYSTEM LOAD</span><strong>{snapshot ? `${snapshot.cpuPercent.toFixed(0)}%` : '—'}</strong><small>{snapshot?.logicalCpuCount ?? 0} logical processors</small></div></section>
+      <section className="pulse-ribbon"><div className={`pulse-title ${pulseState.toLowerCase()}`}><button className={`pulse-beacon ${telemetryOnline ? 'online' : ''}`} type="button" onClick={() => setManualPause((paused) => !paused)} aria-label={manualPause ? 'Resume all telemetry queries' : 'Pause all telemetry queries'} aria-pressed={manualPause} title={manualPause ? 'Resume monitoring' : 'Pause monitoring'}><svg viewBox="0 0 12 12" aria-hidden="true">{manualPause ? <path d="M3 1.7 10 6 3 10.3Z" /> : <path d="M2.5 2h2.2v8H2.5zm4.8 0h2.2v8H7.3z" />}</svg></button><div><span>SYSTEM PULSE</span><strong>{pulseState}</strong>{pulseDetail && <small>{pulseDetail}</small>}</div></div><div className="pulse-reading host"><div className="host-copy"><span>HOST</span><strong>{snapshot?.hostName ?? '—'}</strong></div><HostHardware snapshot={snapshot} operatingSystem={snapshot?.operatingSystem ?? telemetryError ?? 'Awaiting native runtime'} visible={hostSpecsVisible} time={clockTime} onToggle={() => setHostSpecsVisible((visible) => !visible)} /></div><div className="pulse-reading"><span>UPTIME</span><strong>{snapshot ? formatUptime(snapshot.uptimeSeconds) : '—'}</strong><small>{snapshot?.processCount ?? 0} active processes</small></div><div className="pulse-reading"><span>SYSTEM LOAD</span><strong>{snapshot ? `${snapshot.cpuPercent.toFixed(0)}%` : '—'}</strong><small>{snapshot?.logicalCpuCount ?? 0} logical processors</small></div></section>
       <section className="command-surface">
         <div className="performance-grid">
           <section className="module cpu-module"><ModuleHeader code="PERF / 01" title="CPU Matrix" meta={<span>{snapshot?.logicalCpuCount ?? 0} CORES</span>} /><div className="cpu-layout"><MetricRing value={snapshot?.cpuPercent ?? 0} label="TOTAL LOAD" /><div className="core-grid">{(snapshot?.perCpuPercent ?? []).slice(0, 16).map((value, index) => <i key={index} title={`CPU ${index + 1}: ${value.toFixed(0)}%`} style={{ '--core-load': `${value}%` } as CSSProperties} />)}</div></div></section>
@@ -699,12 +706,24 @@ function App() {
         </div>
         <div className="operations-grid">
           <section className="module process-module"><ModuleHeader code="ACTIVITY / 06" title="Process Flow" meta={<span>{snapshot?.processCount ?? 0} ACTIVE</span>} /><div className="process-list"><div className="list-head"><span>PROCESS</span><span>CPU</span><span>MEMORY</span><span>PID</span></div>{snapshot?.topProcesses.length ? snapshot.topProcesses.map((process) => <div className="process-row" key={process.pid}><span><i />{process.name}</span><strong>{process.cpuPercent.toFixed(1)}%</strong><strong>{formatBytes(process.memoryBytes)}</strong><code>{process.pid}</code></div>) : <EmptyState text="Native process stream is waiting for the desktop runtime." />}</div><IncidentStream incidents={incidents} /></section>
-          <section className="module events-module"><ModuleHeader code="WINDOWS / 07" title="System Events" meta={<span>LIVE EVENT LOG</span>} /><div className="event-filters" role="tablist" aria-label="Event category">{EVENT_FILTERS.map((filter) => <button key={filter.id} className={`${filter.id} ${eventFilter === filter.id ? 'active' : ''}`} onClick={() => { setEventFilter(filter.id); setEventTooltip(null); }} role="tab" aria-selected={eventFilter === filter.id}><span>{filter.label}</span><strong>{events.filter((event) => event.kind === filter.id).length}</strong></button>)}</div><div className="event-list" onScroll={() => setEventTooltip(null)}>{filteredEvents.length ? filteredEvents.map((record) => <article className={`event-row ${record.kind}`} key={record.id} tabIndex={0} onMouseEnter={(event) => showEventTooltip(event.currentTarget, record)} onMouseLeave={() => setEventTooltip(null)} onFocus={(event) => showEventTooltip(event.currentTarget, record)} onBlur={() => setEventTooltip(null)}><i /><div><strong>{record.source}</strong><p>{record.message}</p></div><time>{new Date(record.timestamp).toLocaleString()}</time></article>) : <div className="event-empty"><span>NO RECENT RECORDS</span><strong>{EVENT_FILTERS.find((filter) => filter.id === eventFilter)?.label} channel is clear</strong><p>Windows Event Log is active. New matching records will appear automatically.</p></div>}</div></section>
+          <section className="module events-module">
+            <ModuleHeader code="WINDOWS / 07" title="System Events" meta={<span>CURATED EVENT LOG</span>} />
+            <div className="event-filters" role="tablist" aria-label="Event category">
+              {EVENT_FILTERS.map((filter) => <button key={filter.id} className={`${filter.id} ${eventFilter === filter.id ? 'active' : ''}`} onClick={() => { setEventFilter(filter.id); setEventTooltip(null); }} role="tab" aria-selected={eventFilter === filter.id}><span>{filter.label}</span><strong>{eventFilterCount(filter.id)}</strong></button>)}
+            </div>
+            <div className="event-list" onScroll={() => setEventTooltip(null)}>
+              {filteredEvents.length ? filteredEvents.map((record) => <article className={`event-row ${record.kind} ${record.category}`} key={record.id} tabIndex={0} onMouseEnter={(event) => showEventTooltip(event.currentTarget, record)} onMouseLeave={() => setEventTooltip(null)} onFocus={(event) => showEventTooltip(event.currentTarget, record)} onBlur={() => setEventTooltip(null)}>
+                <i />
+                <div className="event-copy"><div className="event-identity"><strong>{record.summary}</strong><span>{record.category.toUpperCase()} · ID {record.eventId}</span></div><p>{record.source}</p></div>
+                <div className="event-trailing">{record.count > 1 && <b>×{record.count}</b>}<time>{new Date(record.timestamp).toLocaleString()}</time></div>
+              </article>) : <div className="event-empty"><span>NO RECENT RECORDS</span><strong>{EVENT_FILTERS.find((filter) => filter.id === eventFilter)?.label} channel is clear</strong><p>HORUS is watching the curated Windows Event Log channels. New matching records will appear automatically.</p></div>}
+            </div>
+          </section>
         </div>
       </section>
     </main>
     <footer><span>HORUS NATIVE TELEMETRY BUS</span><div className="footer-status"><button className={`update-trigger ${updatePhase === 'available' ? 'has-update' : ''}`} onClick={() => void handleUpdate()} disabled={updatePhase === 'checking' || updatePhase === 'downloading' || updatePhase === 'installing'}>{updateLabel}</button><span>{snapshot ? `LAST SAMPLE ${new Date(snapshot.timestampMs).toLocaleTimeString()}` : 'NO NATIVE SAMPLE'}</span></div></footer>
-    {eventTooltip && <aside className={`event-tooltip ${eventTooltip.above ? 'above' : ''}`} style={{ top: eventTooltip.top, left: eventTooltip.left, width: eventTooltip.width }} role="tooltip"><div><span>{eventTooltip.record.kind.toUpperCase()}</span><time>{new Date(eventTooltip.record.timestamp).toLocaleString()}</time></div><strong>{eventTooltip.record.source}</strong><p>{eventTooltip.record.message}</p></aside>}
+    {eventTooltip && <aside className={`event-tooltip ${eventTooltip.above ? 'above' : ''}`} style={{ top: eventTooltip.top, left: eventTooltip.left, width: eventTooltip.width }} role="tooltip"><div><span>{eventTooltip.record.kind.toUpperCase()} · {eventTooltip.record.category.toUpperCase()} · ID {eventTooltip.record.eventId}</span><time>{new Date(eventTooltip.record.timestamp).toLocaleString()}</time></div><strong>{eventTooltip.record.summary}</strong><small>{eventTooltip.record.source} · {eventTooltip.record.channel}{eventTooltip.record.count > 1 ? ` · ×${eventTooltip.record.count}` : ''}</small><p>{eventTooltip.record.message}</p></aside>}
     {settingsOpen && <button className={`settings-backdrop ${settingsBlur ? 'is-blurred' : ''}`} aria-label="Close settings" onClick={() => setSettingsOpen(false)} />}
     <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} theme={theme} setTheme={setTheme} decorations={decorations} setDecorations={setDecorations} settingsBlur={settingsBlur} setSettingsBlur={setSettingsBlur} hieroglyphMotion={hieroglyphMotion} setHieroglyphMotion={setHieroglyphMotion} hieroglyphSpeed={hieroglyphSpeed} setHieroglyphSpeed={setHieroglyphSpeed} autostart={autostart} autostartBusy={autostartBusy} onAutostartChange={(enabled) => void handleAutostartChange(enabled)} />
   </div>;

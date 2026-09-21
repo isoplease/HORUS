@@ -4,6 +4,7 @@ use serde::Serialize;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::{
+    collections::HashMap,
     path::PathBuf,
     process::Command,
     sync::{
@@ -61,9 +62,14 @@ struct DiskSample {
 struct WindowsEventRecord {
     id: String,
     kind: String,
+    category: String,
+    event_id: String,
+    channel: String,
     source: String,
+    summary: String,
     message: String,
     timestamp: String,
+    count: u32,
 }
 
 #[derive(Serialize)]
@@ -418,6 +424,108 @@ fn clean_event_message(value: &str) -> String {
     }
 }
 
+fn event_category(channel: &str, source: &str) -> &'static str {
+    if channel == "Application" {
+        return "app";
+    }
+    let source = source.to_ascii_lowercase();
+    if [
+        "whea", "disk", "ntfs", "storahci", "stornvme", "nvme", "display", "dxgkrnl",
+    ]
+    .iter()
+    .any(|needle| source.contains(needle))
+    {
+        "hardware"
+    } else {
+        "os"
+    }
+}
+
+fn is_curated_event(channel: &str, source: &str, event_id: &str, kind: &str) -> bool {
+    if channel != "System" {
+        return true;
+    }
+    if kind == "critical" {
+        return true;
+    }
+    let source = source.to_ascii_lowercase();
+    let event_id = event_id.trim();
+    source.contains("whea")
+        || source == "disk"
+        || source.contains("storahci")
+        || source.contains("stornvme")
+        || source.contains("ntfs")
+        || source.contains("display")
+        || source.contains("resource-exhaustion")
+        || (source.contains("kernel-power") && event_id == "41")
+        || (source == "eventlog" && event_id == "6008")
+        || (source.contains("systemerrorreporting") && event_id == "1001")
+        || (source.contains("service control manager")
+            && matches!(
+                event_id,
+                "7000" | "7001" | "7009" | "7011" | "7022" | "7023" | "7024" | "7031" | "7034"
+            ))
+}
+
+fn event_summary(channel: &str, source: &str, event_id: &str, kind: &str) -> String {
+    let provider = source.to_ascii_lowercase();
+    match event_id.trim() {
+        "41" if provider.contains("kernel-power") => {
+            "The system restarted without a clean shutdown.".to_string()
+        }
+        "6008" if provider == "eventlog" => {
+            "The previous system shutdown was unexpected.".to_string()
+        }
+        "1001" if provider.contains("systemerrorreporting") => {
+            "Windows recorded a system bug check.".to_string()
+        }
+        "17" | "18" | "19" | "20" | "46" | "47" if provider.contains("whea") => {
+            "Windows detected a hardware reliability fault.".to_string()
+        }
+        "7" if provider == "disk" => "A storage device reported a bad block.".to_string(),
+        "51" if provider == "disk" => "A storage paging operation failed.".to_string(),
+        "129" if provider.contains("stor") => {
+            "A storage request timed out and was reset.".to_string()
+        }
+        "153" if provider == "disk" => "A storage I/O operation had to be retried.".to_string(),
+        "55" | "98" | "140" if provider.contains("ntfs") => {
+            "Windows detected a file-system integrity problem.".to_string()
+        }
+        "4101" if provider.contains("display") => {
+            "The display driver stopped responding and recovered.".to_string()
+        }
+        "2004" if provider.contains("resource-exhaustion") => {
+            "Windows detected resource or memory exhaustion.".to_string()
+        }
+        "7000" | "7001" | "7009" | "7011" | "7022" | "7023" | "7024"
+            if provider.contains("service control manager") =>
+        {
+            "A Windows service could not start or respond.".to_string()
+        }
+        "7031" | "7034" if provider.contains("service control manager") => {
+            "A Windows service terminated unexpectedly.".to_string()
+        }
+        "20" | "25" | "31" | "34" if provider.contains("windowsupdate") => {
+            "A Windows Update operation failed.".to_string()
+        }
+        _ if provider.contains("diagnostics-performance")
+            && event_id
+                .trim()
+                .parse::<u16>()
+                .is_ok_and(|id| (100..=199).contains(&id)) =>
+        {
+            "Windows detected degraded startup or shutdown performance.".to_string()
+        }
+        "1000" if channel == "Application" => {
+            "An application stopped working unexpectedly.".to_string()
+        }
+        "1026" if channel == "Application" => {
+            "A .NET application ended with an unhandled exception.".to_string()
+        }
+        _ => format!("{source} reported a {kind} event."),
+    }
+}
+
 fn parse_windows_events(xml: &str, channel: &str) -> Vec<WindowsEventRecord> {
     xml.split("<Event ")
         .skip(1)
@@ -433,22 +541,26 @@ fn parse_windows_events(xml: &str, channel: &str) -> Vec<WindowsEventRecord> {
                 .map(|value| clean_event_message(&value))
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| format!("Windows event {event_id}"));
-            let kind = if channel == "Application" {
-                "application"
-            } else {
-                match level.trim() {
-                    "1" => "critical",
-                    "2" => "error",
-                    "3" => "warning",
-                    _ => return None,
-                }
+            let kind = match level.trim() {
+                "1" => "critical",
+                "2" => "error",
+                "3" => "warning",
+                _ => return None,
             };
+            if !is_curated_event(channel, &source, &event_id, kind) {
+                return None;
+            }
             Some(WindowsEventRecord {
                 id: format!("{channel}-{record_id}"),
                 kind: kind.to_string(),
+                category: event_category(channel, &source).to_string(),
+                event_id: event_id.clone(),
+                channel: channel.to_string(),
+                summary: event_summary(channel, &source, &event_id, kind),
                 source,
                 message,
                 timestamp,
+                count: 1,
             })
         })
         .collect()
@@ -487,6 +599,26 @@ fn query_windows_event_log(channel: &str, count: usize) -> Result<Vec<WindowsEve
     ))
 }
 
+fn group_windows_events(events: Vec<WindowsEventRecord>) -> Vec<WindowsEventRecord> {
+    let mut grouped = Vec::<WindowsEventRecord>::new();
+    let mut group_indexes = HashMap::<String, usize>::new();
+    for event in events {
+        let key = format!(
+            "{}\u{1f}{}\u{1f}{}",
+            event.channel.to_ascii_lowercase(),
+            event.source.to_ascii_lowercase(),
+            event.event_id
+        );
+        if let Some(index) = group_indexes.get(&key).copied() {
+            grouped[index].count += 1;
+        } else {
+            group_indexes.insert(key, grouped.len());
+            grouped.push(event);
+        }
+    }
+    grouped
+}
+
 #[tauri::command]
 fn get_windows_events(
     state: tauri::State<'_, TelemetryState>,
@@ -494,11 +626,20 @@ fn get_windows_events(
     if !state.monitoring_active.load(Ordering::Relaxed) {
         return Err("MONITORING_PAUSED".to_string());
     }
-    let mut events = query_windows_event_log("System", 40)?;
-    events.extend(query_windows_event_log("Application", 20)?);
+    let mut events = query_windows_event_log("System", 120)?;
+    for (channel, count) in [
+        ("Application", 60),
+        ("Microsoft-Windows-WindowsUpdateClient/Operational", 30),
+        ("Microsoft-Windows-Diagnostics-Performance/Operational", 20),
+    ] {
+        if let Ok(records) = query_windows_event_log(channel, count) {
+            events.extend(records);
+        }
+    }
     events.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
-    events.truncate(60);
-    Ok(events)
+    let mut grouped = group_windows_events(events);
+    grouped.truncate(80);
+    Ok(grouped)
 }
 
 #[tauri::command]
@@ -518,9 +659,24 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].id, "System-42");
         assert_eq!(events[0].kind, "warning");
+        assert_eq!(events[0].category, "hardware");
+        assert_eq!(events[0].event_id, "7");
+        assert_eq!(events[0].channel, "System");
         assert_eq!(events[0].source, "Disk");
+        assert_eq!(events[0].summary, "A storage device reported a bad block.");
         assert_eq!(events[0].message, "Disk warning Check cable & retry.");
         assert_eq!(events[0].timestamp, "2026-09-17T08:15:00Z");
+        assert_eq!(events[0].count, 1);
+    }
+
+    #[test]
+    fn groups_repeated_windows_events_by_channel_provider_and_event_id() {
+        let xml = "<Event xmlns='event'><System><Provider Name='Disk'/><EventID>153</EventID><Level>3</Level><TimeCreated SystemTime='2026-09-17T08:16:00Z'/><EventRecordID>43</EventRecordID></System><RenderingInfo><Message>Retry one.</Message></RenderingInfo></Event><Event xmlns='event'><System><Provider Name='Disk'/><EventID>153</EventID><Level>3</Level><TimeCreated SystemTime='2026-09-17T08:15:00Z'/><EventRecordID>42</EventRecordID></System><RenderingInfo><Message>Retry two.</Message></RenderingInfo></Event>";
+        let grouped = group_windows_events(parse_windows_events(xml, "System"));
+
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped[0].id, "System-43");
+        assert_eq!(grouped[0].count, 2);
     }
 
     #[test]
