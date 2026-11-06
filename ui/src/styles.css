@@ -42,6 +42,7 @@ body {
     linear-gradient(150deg, rgba(var(--background-rgb), calc(var(--background-alpha) * .88)), rgba(var(--background-rgb), var(--background-alpha)) 52%);
   font-size: 13px;
 }
+body:has(.compact-layout) { background: transparent; }
 button, input { font: inherit; }
 button { -webkit-tap-highlight-color: transparent; }
 h1, h2, h3, p { margin: 0; }
@@ -84,11 +85,16 @@ h1 { font-family: "HORUS Display", "Segoe UI Variable", "Segoe UI", sans-serif; 
 .settings-trigger:hover, .settings-actions button:hover { border-color: var(--accent); box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 20%, transparent); }
 
 .compact-layout { width: 100%; height: 100%; display: flex; align-items: center; gap: 0; overflow: hidden; padding: 5px 8px; border: 1px solid var(--line-strong); border-radius: 9px; color: var(--heading); background: linear-gradient(110deg, rgba(var(--background-rgb), .98), rgba(var(--surface-rgb), .98)); box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 15%, transparent); font: 650 10px/1 ui-monospace, Consolas, monospace; }
+.compact-move { width: 30px; height: 30px; flex: 0 0 30px; display: grid; place-items: center; margin-right: 4px; padding: 0; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--info); background: color-mix(in srgb, var(--surface-rgb) 65%, transparent); cursor: move; }
+.compact-move svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.15; stroke-linecap: round; stroke-linejoin: round; }
+.compact-move:hover, .compact-move.is-dragging { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .compact-metric { min-width: 54px; height: 32px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 0 10px; border-right: 1px solid var(--line); }
 .compact-metric span { color: var(--info); font-size: 8px; letter-spacing: .1em; white-space: nowrap; }
 .compact-metric strong { color: var(--accent); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .compact-metric.gpu strong { color: var(--chart); }
 .compact-metric.ram strong { color: var(--warning); }
+.compact-metric.compact-vram { min-width: 64px; }
+.compact-metric.compact-vram strong { color: var(--chart); }
 .compact-disks { min-width: 0; flex: 1; display: flex; overflow: hidden; }
 .compact-disk { width: 56px; min-width: 56px; flex: 0 0 56px; padding-right: 4px; padding-left: 4px; }
 .compact-disk span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }

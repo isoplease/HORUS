@@ -11,6 +11,7 @@ import type { CoreSnapshot, DiskSnapshot, EventFilter, ProcessSnapshot, SystemSn
 const THEME_KEY = 'horus-theme-v1';
 const FRAME_KEY = 'horus-window-frame-v1';
 const AUTOSTART_INITIALIZED_KEY = 'horus-autostart-initialized-v1';
+const COMPACT_LAYOUT_KEY = 'horus-compact-layout-v1';
 const HOST_SPECS_KEY = 'horus-host-specs-visible-v1';
 const SETTINGS_BLUR_KEY = 'horus-settings-backdrop-blur-v1';
 const HIEROGLYPH_MOTION_KEY = 'horus-hieroglyph-motion-v1';
@@ -249,7 +250,7 @@ function App() {
   const [timelineSeries, setTimelineSeries] = useState<Record<TimelineSeries, boolean>>({ cpu: true, memory: true, gpu: true, network: true });
   const [theme, setTheme] = useState<ThemeSettings>(() => loadJson(THEME_KEY, DEFAULT_THEME));
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [compactLayout, setCompactLayout] = useState(false);
+  const [compactLayout, setCompactLayout] = useState(() => isTauriRuntime() && localStorage.getItem(COMPACT_LAYOUT_KEY) === 'true');
   const [decorations, setDecorations] = useState(() => localStorage.getItem(FRAME_KEY) !== 'false');
   const [settingsBlur, setSettingsBlur] = useState(() => localStorage.getItem(SETTINGS_BLUR_KEY) !== 'false');
   const [hieroglyphMotion, setHieroglyphMotion] = useState(() => localStorage.getItem(HIEROGLYPH_MOTION_KEY) !== 'false');
@@ -598,7 +599,7 @@ function App() {
   const diskTotal = snapshot?.disks.reduce((sum, disk) => sum + disk.totalBytes, 0) ?? 0;
   const diskUsed = snapshot?.disks.reduce((sum, disk) => sum + disk.totalBytes - disk.availableBytes, 0) ?? 0;
   const sortedDisks = useMemo(() => [...(snapshot?.disks ?? [])].sort((left, right) => (left.mountPoint || left.name).localeCompare(right.mountPoint || right.name)), [snapshot?.disks]);
-  const compactWidth = 248 + sortedDisks.length * 56;
+  const compactWidth = 300 + sortedDisks.length * 56 + (snapshot?.gpuMemoryBytes ? 64 : 0);
   const latestGpuSample = timeline.at(-1);
   const compactGpuPercent = latestGpuSample && latestGpuSample.timestampMs === snapshot?.timestampMs
     ? latestGpuSample.gpu
@@ -607,9 +608,15 @@ function App() {
     if (!isTauriRuntime()) return;
     try {
       await invoke('set_compact_layout', { compact, width: compactWidth, decorations });
+      localStorage.setItem(COMPACT_LAYOUT_KEY, String(compact));
       setCompactLayout(compact);
     } catch (error) { console.error('Window layout could not be changed:', error); }
   };
+  useEffect(() => {
+    if (!compactLayout || !isTauriRuntime()) return;
+    void invoke('set_compact_layout', { compact: true, width: compactWidth, decorations })
+      .catch((error) => console.error('Compact layout width could not be updated:', error));
+  }, [compactLayout, compactWidth, decorations]);
   const filteredEvents = useMemo(() => events.filter((event) => eventFilter === 'all' || (eventFilter === 'critical' ? event.kind === 'critical' : event.category === eventFilter)), [eventFilter, events]);
   const eventFilterCount = useCallback((filter: EventFilter) => events.reduce((total, event) => {
     const matches = filter === 'all' || (filter === 'critical' ? event.kind === 'critical' : event.category === filter);
@@ -702,8 +709,10 @@ function App() {
   };
 
   if (compactLayout) return <div className="compact-layout" role="region" aria-label="HORUS system summary">
+    <button className={`compact-move ${windowDragging ? 'is-dragging' : ''}`} onMouseDown={(event) => void handleWindowDrag(event)} aria-label="Move mini window" title="Drag to move"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5v13M1.5 8h13M8 1.5 5.5 4M8 1.5 10.5 4M8 14.5 5.5 12M8 14.5 10.5 12M1.5 8 4 5.5M1.5 8 4 10.5M14.5 8 12 5.5M14.5 8 12 10.5" /></svg></button>
     <div className="compact-metric"><span>CPU</span><strong>{snapshot ? `${snapshot.cpuPercent.toFixed(0)}%` : '—'}</strong></div>
     <div className="compact-metric gpu" title="Latest GPU sample from Telemetry Timeline"><span>GPU</span><strong>{compactGpuPercent === undefined ? '—' : `${compactGpuPercent.toFixed(0)}%`}</strong></div>
+    {snapshot?.gpuMemoryBytes ? <div className="compact-metric compact-vram" title="Dedicated GPU memory capacity"><span>VRAM</span><strong>{formatBytes(snapshot.gpuMemoryBytes, 0)}</strong></div> : null}
     <div className="compact-metric ram"><span>RAM</span><strong>{snapshot ? `${memoryPercent.toFixed(0)}%` : '—'}</strong></div>
     <div className="compact-disks" aria-label="Storage usage">{sortedDisks.map((disk) => <div className="compact-metric compact-disk" key={`${disk.name}-${disk.mountPoint}`} title={`${disk.mountPoint || disk.name}: ${formatBytes(disk.totalBytes - disk.availableBytes)} / ${formatBytes(disk.totalBytes)}`}><span>{disk.mountPoint || disk.name}</span><strong>{percent(disk.totalBytes - disk.availableBytes, disk.totalBytes).toFixed(0)}%</strong></div>)}</div>
     <button className="compact-restore" onClick={() => void toggleCompactLayout(false)} aria-label="Restore HORUS window" title="Restore"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 10 5-5 5 5" /></svg></button>
@@ -712,7 +721,7 @@ function App() {
   return <div className={`app-shell ${decorations ? '' : 'frameless'}`}>
     {!decorations && <>{RESIZE_HANDLES.map(([direction, className]) => <div key={direction} className={className} onMouseDown={(event) => { if (event.button === 0 && isTauriRuntime()) void getCurrentWindow().startResizeDragging(direction); }} />)}<div className="window-chrome"><button className={`drag-zone ${windowDragging ? 'is-dragging' : ''}`} aria-label="Move window" onMouseDown={(event) => void handleWindowDrag(event)}><span className={`hieroglyph-track ${!hieroglyphMotion || windowDragging ? 'is-paused' : ''}`} style={{ '--hieroglyph-duration': `${48 * 100 / hieroglyphSpeed}s` } as CSSProperties} aria-hidden="true"><img src="/hieroglyphics.png" alt="" /><img src="/hieroglyphics.png" alt="" /></span></button><div className="window-controls"><button className="chrome-action minimize-window" onClick={() => { setWindowMonitoringActive(false); if (isTauriRuntime()) void getCurrentWindow().minimize(); }} aria-label="Minimize window" title="Minimize"><WindowControlIcon type="minimize" /></button><button className="chrome-action maximize-window" onClick={() => isTauriRuntime() && void getCurrentWindow().toggleMaximize()} aria-label="Maximize window" title="Maximize"><WindowControlIcon type="maximize" /></button><button className="chrome-action close-window" onClick={() => { setWindowMonitoringActive(false); if (isTauriRuntime()) void getCurrentWindow().hide(); }} aria-label="Close window" title="Close"><WindowControlIcon type="close" /></button></div></div></>}
     <div className="ambient-grid" />
-    <header className="topbar"><div className="brand-block"><div className="brand-mark" tabIndex={0} aria-describedby="brand-origin"><img className="brand-icon" src="/teoh-alt02-transparent.png" alt="HORUS emblem" /><div className="brand-popover" id="brand-origin" role="tooltip"><img src="/teoh-alt02-transparent.png" alt="" /><p>It was made on Earth by two entitiy named İsmail and Codex</p></div></div><div className="brand-copy"><h1>HORUS</h1><span className="eyebrow">REAL-TIME SYSTEM OBSERVATORY</span></div></div><div className="topbar-status"><div><span className={`live-dot ${telemetryOnline ? 'online' : ''} ${pulseState === 'ABNORMAL' ? 'abnormal' : ''}`} />{topbarStatus}</div><div className="topbar-actions"><button className="layout-switch" onClick={() => void toggleCompactLayout(true)} aria-label="Switch to taskbar summary" title="Compact taskbar layout"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4h14v12H3zM6 7h8M6 10h5M6 13h8" /></svg></button><button className="settings-trigger" onClick={() => setSettingsOpen(true)}>CONTROL MATRIX</button></div></div></header>
+    <header className="topbar"><div className="brand-block"><div className="brand-mark" tabIndex={0} aria-describedby="brand-origin"><img className="brand-icon" src="/teoh-alt02-transparent.png" alt="HORUS emblem" /><div className="brand-popover" id="brand-origin" role="tooltip"><img src="/teoh-alt02-transparent.png" alt="" /><p>It was made on Earth by two entitiy named İsmail and Codex</p></div></div><div className="brand-copy"><h1>HORUS</h1><span className="eyebrow">REAL-TIME SYSTEM OBSERVATORY</span></div></div><div className="topbar-status"><div><span className={`live-dot ${telemetryOnline ? 'online' : ''} ${pulseState === 'ABNORMAL' ? 'abnormal' : ''}`} />{topbarStatus}</div><div className="topbar-actions"><button className="layout-switch" onClick={() => void toggleCompactLayout(true)} aria-label="Switch to mini layout" title="Compact floating layout"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4h14v12H3zM6 7h8M6 10h5M6 13h8" /></svg></button><button className="settings-trigger" onClick={() => setSettingsOpen(true)}>CONTROL MATRIX</button></div></div></header>
     <main>
       <section className="pulse-ribbon"><div className={`pulse-title ${pulseState.toLowerCase()}`}><button className={`pulse-beacon ${telemetryOnline ? 'online' : ''}`} type="button" onClick={() => setManualPause((paused) => !paused)} aria-label={manualPause ? 'Resume all telemetry queries' : 'Pause all telemetry queries'} aria-pressed={manualPause} title={manualPause ? 'Resume monitoring' : 'Pause monitoring'}><svg viewBox="0 0 12 12" aria-hidden="true">{manualPause ? <path d="M3 1.7 10 6 3 10.3Z" /> : <path d="M2.5 2h2.2v8H2.5zm4.8 0h2.2v8H7.3z" />}</svg></button><div><span>SYSTEM PULSE</span><strong>{pulseState}</strong>{pulseDetail && <small>{pulseDetail}</small>}</div></div><div className="pulse-reading host"><div className="host-copy"><span>HOST</span><strong>{snapshot?.hostName ?? '—'}</strong></div><HostHardware snapshot={snapshot} operatingSystem={snapshot?.operatingSystem ?? telemetryError ?? 'Awaiting native runtime'} visible={hostSpecsVisible} time={clockTime} onToggle={() => setHostSpecsVisible((visible) => !visible)} /></div><div className="pulse-reading"><span>UPTIME</span><strong>{snapshot ? formatUptime(snapshot.uptimeSeconds) : '—'}</strong><small>{snapshot?.processCount ?? 0} active processes</small></div><div className="pulse-reading"><span>SYSTEM LOAD</span><strong>{snapshot ? `${snapshot.cpuPercent.toFixed(0)}%` : '—'}</strong><small>{snapshot?.logicalCpuCount ?? 0} logical processors</small></div></section>
       <section className="command-surface">
