@@ -736,6 +736,48 @@ fn set_window_frame(window: tauri::WebviewWindow, decorations: bool) -> Result<(
     Ok(())
 }
 
+#[tauri::command]
+fn set_compact_layout(
+    window: tauri::WebviewWindow,
+    compact: bool,
+    width: u32,
+    decorations: bool,
+) -> Result<(), String> {
+    if compact {
+        let monitor = window.current_monitor().map_err(|error| error.to_string())?
+            .or(window.primary_monitor().map_err(|error| error.to_string())?)
+            .ok_or_else(|| "Display monitor is unavailable".to_string())?;
+        let scale = monitor.scale_factor();
+        let monitor_size = monitor.size();
+        let logical_width = (width as f64).min(monitor_size.width as f64 / scale - 24.0).max(300.0);
+        let physical_height = (52.0 * scale) as u32;
+        let physical_width = (logical_width * scale) as u32;
+        window.set_min_size(Some(tauri::PhysicalSize::new(physical_width.min(300), physical_height))).map_err(|error| error.to_string())?;
+        window.set_skip_taskbar(false).map_err(|error| error.to_string())?;
+        window.set_decorations(false).map_err(|error| error.to_string())?;
+        window.set_resizable(false).map_err(|error| error.to_string())?;
+        window.set_always_on_top(true).map_err(|error| error.to_string())?;
+        window.set_size(tauri::PhysicalSize::new(physical_width, physical_height)).map_err(|error| error.to_string())?;
+        window.set_position(tauri::PhysicalPosition::new(
+            monitor.position().x + monitor_size.width as i32 - physical_width as i32 - (8.0 * scale) as i32,
+            monitor.position().y + monitor_size.height as i32 - physical_height as i32 - (48.0 * scale) as i32,
+        )).map_err(|error| error.to_string())?;
+        window.show().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+    } else {
+        window.set_always_on_top(false).map_err(|error| error.to_string())?;
+        window.set_skip_taskbar(true).map_err(|error| error.to_string())?;
+        window.set_resizable(true).map_err(|error| error.to_string())?;
+        window.set_min_size(Some(tauri::LogicalSize::new(760.0, 560.0))).map_err(|error| error.to_string())?;
+        window.set_decorations(decorations).map_err(|error| error.to_string())?;
+        window.set_size(tauri::LogicalSize::new(1260.0, 840.0)).map_err(|error| error.to_string())?;
+        window.center().map_err(|error| error.to_string())?;
+        window.show().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 fn main() {
     let mut core_system = System::new_all();
     std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
@@ -788,7 +830,8 @@ fn main() {
             get_disk_snapshot,
             get_windows_events,
             set_monitoring_active,
-            set_window_frame
+            set_window_frame,
+            set_compact_layout
         ])
         .setup(|app| {
             let show_item = MenuItem::with_id(app, "show", "Open HORUS", true, None::<&str>)?;
