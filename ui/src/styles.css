@@ -42,6 +42,7 @@ body {
     linear-gradient(150deg, rgba(var(--background-rgb), calc(var(--background-alpha) * .88)), rgba(var(--background-rgb), var(--background-alpha)) 52%);
   font-size: 13px;
 }
+body:has(.compact-layout) { background: transparent; }
 button, input { font: inherit; }
 button { -webkit-tap-highlight-color: transparent; }
 h1, h2, h3, p { margin: 0; }
@@ -73,11 +74,34 @@ h1, h2, h3, strong { color: var(--heading); }
 h1 { font-family: "HORUS Display", "Segoe UI Variable", "Segoe UI", sans-serif; font-size: clamp(28px, 2.8vw, 38px); font-weight: 700; line-height: .9; letter-spacing: .055em; }
 .brand-copy .eyebrow { margin-top: 6px; }
 .topbar-status { gap: 20px; color: var(--info); font-size: 11px; font-weight: 700; letter-spacing: .09em; }
+.topbar-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
+.layout-switch { width: 30px; height: 30px; display: grid; place-items: center; padding: 5px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); cursor: pointer; }
+.layout-switch svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.layout-switch:hover { border-color: var(--accent); box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 20%, transparent); }
 .live-dot { display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: var(--warning); box-shadow: 0 0 10px var(--warning); }
 .live-dot.online { background: var(--chart); box-shadow: 0 0 11px var(--chart); animation: pulse 2.4s ease-in-out infinite; }
 .live-dot.abnormal { background: var(--critical); box-shadow: 0 0 11px var(--critical); animation: pulse 1s ease-in-out infinite; }
 .settings-trigger, .settings-actions button { border: 1px solid var(--line-strong); border-radius: 6px; padding: 9px 12px; cursor: pointer; color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); font-size: 10px; font-weight: 700; letter-spacing: .09em; transition: .18s ease; }
 .settings-trigger:hover, .settings-actions button:hover { border-color: var(--accent); box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 20%, transparent); }
+
+.compact-layout { width: 100%; height: 100%; display: flex; align-items: center; gap: 0; overflow: hidden; padding: 5px 8px; border: 1px solid var(--line-strong); border-radius: 9px; color: var(--heading); background: linear-gradient(110deg, rgba(var(--background-rgb), .98), rgba(var(--surface-rgb), .98)); box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 15%, transparent); font: 650 10px/1 ui-monospace, Consolas, monospace; }
+.compact-move { width: 30px; height: 30px; flex: 0 0 30px; display: grid; place-items: center; margin-right: 4px; padding: 0; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--info); background: color-mix(in srgb, var(--surface-rgb) 65%, transparent); cursor: move; }
+.compact-move svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.15; stroke-linecap: round; stroke-linejoin: round; }
+.compact-move:hover, .compact-move.is-dragging { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.compact-metric { min-width: 54px; height: 32px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 0 10px; border-right: 1px solid var(--line); }
+.compact-metric span { color: var(--info); font-size: 8px; letter-spacing: .1em; white-space: nowrap; }
+.compact-metric strong { color: var(--accent); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.compact-metric.gpu strong { color: var(--chart); }
+.compact-metric.ram strong { color: var(--warning); }
+.compact-metric.compact-vram { min-width: 64px; }
+.compact-metric.compact-vram strong { color: var(--chart); }
+.compact-disks { min-width: 0; flex: 1; display: flex; overflow: hidden; }
+.compact-disk { width: 56px; min-width: 56px; flex: 0 0 56px; padding-right: 4px; padding-left: 4px; }
+.compact-disk span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.compact-disk strong { color: var(--heading); }
+.compact-restore { width: 34px; height: 34px; flex: 0 0 34px; display: grid; place-items: center; margin-left: 5px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); cursor: pointer; }
+.compact-restore svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.compact-restore:hover { color: var(--heading); background: color-mix(in srgb, var(--accent) 18%, transparent); }
 
 main { position: relative; min-height: 0; flex: 1; display: flex; flex-direction: column; }
 .pulse-ribbon {
