@@ -42,6 +42,7 @@ export interface CoreSnapshot {
   cpuModel: string;
   gpuModel: string;
   gpuMemoryBytes: number;
+  gpuMemoryUsedBytes: number;
   gpuPercent: number;
   totalMemoryBytes: number;
   usedMemoryBytes: number;

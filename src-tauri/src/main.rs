@@ -8,7 +8,7 @@ use std::{
     path::PathBuf,
     process::Command,
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -27,10 +27,36 @@ struct TelemetryState {
     disks: Mutex<Disks>,
     hardware: HardwareInfo,
     gpu_percent: Arc<AtomicU32>,
+    gpu_memory_used_bytes: Arc<AtomicU64>,
     monitoring_active: Arc<AtomicBool>,
 }
 
 static COMPACT_LAYOUT_ENABLED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(windows)]
+fn keep_compact_window_above_taskbar(hwnd: *mut std::ffi::c_void) -> Result<(), String> {
+    use windows::Win32::{
+        Foundation::HWND,
+        UI::WindowsAndMessaging::{
+            SetWindowPos, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE,
+            SWP_SHOWWINDOW,
+        },
+    };
+
+    unsafe {
+        SetWindowPos(
+            HWND(hwnd),
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
 
 #[derive(Clone)]
 struct HardwareInfo {
@@ -87,6 +113,7 @@ struct CoreSnapshot {
     cpu_model: String,
     gpu_model: String,
     gpu_memory_bytes: u64,
+    gpu_memory_used_bytes: u64,
     gpu_percent: f32,
     total_memory_bytes: u64,
     used_memory_bytes: u64,
@@ -149,6 +176,10 @@ fn get_core_snapshot(state: tauri::State<'_, TelemetryState>) -> Result<CoreSnap
         cpu_model: state.hardware.cpu_model.clone(),
         gpu_model: state.hardware.gpu_model.clone(),
         gpu_memory_bytes: state.hardware.gpu_memory_bytes,
+        gpu_memory_used_bytes: state
+            .gpu_memory_used_bytes
+            .load(Ordering::Relaxed)
+            .min(state.hardware.gpu_memory_bytes),
         gpu_percent: f32::from_bits(state.gpu_percent.load(Ordering::Relaxed)),
         total_memory_bytes: system.total_memory(),
         used_memory_bytes: system.used_memory(),
@@ -274,7 +305,7 @@ fn query_windows_gpu() -> (String, u64) {
 }
 
 #[cfg(windows)]
-fn start_gpu_usage_sampler(target: Arc<AtomicU32>, monitoring_active: Arc<AtomicBool>) {
+fn start_gpu_usage_sampler(target: Arc<AtomicU32>, memory_target: Arc<AtomicU64>, monitoring_active: Arc<AtomicBool>) {
     std::thread::spawn(move || unsafe {
         use std::collections::HashMap;
         use windows::{
@@ -303,6 +334,12 @@ fn start_gpu_usage_sampler(target: Arc<AtomicU32>, monitoring_active: Arc<Atomic
             let _ = PdhCloseQuery(query);
             return;
         }
+        let memory_path = "\\GPU Adapter Memory(*)\\Dedicated Usage"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let mut memory_counter = PDH_HCOUNTER::default();
+        let _ = PdhAddEnglishCounterW(query, PCWSTR(memory_path.as_ptr()), 0, &mut memory_counter);
 
         loop {
             if !monitoring_active.load(Ordering::Relaxed) {
@@ -311,6 +348,40 @@ fn start_gpu_usage_sampler(target: Arc<AtomicU32>, monitoring_active: Arc<Atomic
                 continue;
             }
             if PdhCollectQueryData(query) == ERROR_SUCCESS.0 {
+                if !memory_counter.0.is_null() {
+                    let mut buffer_size = 0u32;
+                    let mut item_count = 0u32;
+                    let status = PdhGetFormattedCounterArrayW(
+                        memory_counter,
+                        PDH_FMT_DOUBLE,
+                        &mut buffer_size,
+                        &mut item_count,
+                        None,
+                    );
+                    if status == PDH_MORE_DATA && buffer_size > 0 && item_count > 0 {
+                        let word_size = std::mem::size_of::<usize>();
+                        let mut storage = vec![0usize; (buffer_size as usize).div_ceil(word_size)];
+                        let items = storage.as_mut_ptr().cast::<PDH_FMT_COUNTERVALUE_ITEM_W>();
+                        if PdhGetFormattedCounterArrayW(
+                            memory_counter,
+                            PDH_FMT_DOUBLE,
+                            &mut buffer_size,
+                            &mut item_count,
+                            Some(items),
+                        ) == ERROR_SUCCESS.0
+                        {
+                            let used = std::slice::from_raw_parts(items, item_count as usize)
+                                .iter()
+                                .filter_map(|item| {
+                                    let value = item.FmtValue.Anonymous.doubleValue;
+                                    (item.FmtValue.CStatus == ERROR_SUCCESS.0 && value.is_finite() && value > 0.0)
+                                        .then_some(value as u64)
+                                })
+                                .fold(0u64, u64::saturating_add);
+                            memory_target.store(used, Ordering::Relaxed);
+                        }
+                    }
+                }
                 let mut buffer_size = 0u32;
                 let mut item_count = 0u32;
                 let status = PdhGetFormattedCounterArrayW(
@@ -362,7 +433,7 @@ fn start_gpu_usage_sampler(target: Arc<AtomicU32>, monitoring_active: Arc<Atomic
 }
 
 #[cfg(not(windows))]
-fn start_gpu_usage_sampler(_target: Arc<AtomicU32>, _monitoring_active: Arc<AtomicBool>) {}
+fn start_gpu_usage_sampler(_target: Arc<AtomicU32>, _memory_target: Arc<AtomicU64>, _monitoring_active: Arc<AtomicBool>) {}
 
 #[cfg(not(windows))]
 fn query_windows_gpu() -> (String, u64) {
@@ -789,7 +860,7 @@ fn set_compact_layout(
             )))
             .map_err(|error| error.to_string())?;
         window
-            .set_skip_taskbar(false)
+            .set_skip_taskbar(true)
             .map_err(|error| error.to_string())?;
         window
             .set_decorations(false)
@@ -800,6 +871,8 @@ fn set_compact_layout(
         window
             .set_always_on_top(true)
             .map_err(|error| error.to_string())?;
+        #[cfg(windows)]
+        keep_compact_window_above_taskbar(window.hwnd().map_err(|error| error.to_string())?.0)?;
         window
             .set_size(tauri::PhysicalSize::new(physical_width, physical_height))
             .map_err(|error| error.to_string())?;
@@ -847,8 +920,9 @@ fn main() {
         .unwrap_or_else(|| "Unknown CPU".to_string());
     let (gpu_model, gpu_memory_bytes) = query_windows_gpu();
     let gpu_percent = Arc::new(AtomicU32::new(0f32.to_bits()));
+    let gpu_memory_used_bytes = Arc::new(AtomicU64::new(0));
     let monitoring_active = Arc::new(AtomicBool::new(false));
-    start_gpu_usage_sampler(Arc::clone(&gpu_percent), Arc::clone(&monitoring_active));
+    start_gpu_usage_sampler(Arc::clone(&gpu_percent), Arc::clone(&gpu_memory_used_bytes), Arc::clone(&monitoring_active));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
@@ -879,6 +953,7 @@ fn main() {
                 gpu_memory_bytes,
             },
             gpu_percent,
+            gpu_memory_used_bytes,
             monitoring_active,
         })
         .invoke_handler(tauri::generate_handler![
@@ -931,6 +1006,27 @@ fn main() {
                 let active =
                     window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
                 publish_monitoring_state(window.app_handle(), active);
+            }
+            #[cfg(windows)]
+            WindowEvent::Focused(true) if COMPACT_LAYOUT_ENABLED.load(Ordering::Acquire) => {
+                if let Ok(hwnd) = window.hwnd() {
+                    let _ = keep_compact_window_above_taskbar(hwnd.0);
+                }
+            }
+            #[cfg(windows)]
+            WindowEvent::Focused(false) if COMPACT_LAYOUT_ENABLED.load(Ordering::Acquire) => {
+                let window = window.clone();
+                std::thread::spawn(move || {
+                    for delay in [60, 180, 420] {
+                        std::thread::sleep(Duration::from_millis(delay));
+                        if !COMPACT_LAYOUT_ENABLED.load(Ordering::Acquire) {
+                            break;
+                        }
+                        if let Ok(hwnd) = window.hwnd() {
+                            let _ = keep_compact_window_above_taskbar(hwnd.0);
+                        }
+                    }
+                });
             }
             _ => {}
         })

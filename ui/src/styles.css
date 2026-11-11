@@ -93,7 +93,7 @@ h1 { font-family: "HORUS Display", "Segoe UI Variable", "Segoe UI", sans-serif; 
 .compact-metric strong { color: var(--accent); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .compact-metric.gpu strong { color: var(--chart); }
 .compact-metric.ram strong { color: var(--warning); }
-.compact-metric.compact-vram { min-width: 64px; }
+.compact-metric.compact-vram { min-width: 96px; }
 .compact-metric.compact-vram strong { color: var(--chart); }
 .compact-disks { min-width: 0; flex: 1; display: flex; overflow: hidden; }
 .compact-disk { width: 56px; min-width: 56px; flex: 0 0 56px; padding-right: 4px; padding-left: 4px; }
