@@ -1,6 +1,6 @@
 [package]
 name = "horus"
-version = "0.2.33"
+version = "0.2.35"
 description = "HORUS real-time Windows system observatory"
 authors = ["isoplease"]
 license = "MIT"
@@ -20,7 +20,7 @@ tauri-plugin-autostart = "2"
 tauri-plugin-window-state = "2"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Performance"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Performance", "Win32_UI_WindowsAndMessaging"] }
 
 [features]
 default = ["custom-protocol"]

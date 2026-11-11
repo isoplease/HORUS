@@ -336,7 +336,7 @@ function App() {
       received: 420_000 + Math.abs(Math.sin(index / 3)) * 3_800_000,
       transmitted: 180_000 + Math.abs(Math.cos(index / 4)) * 1_200_000,
     }));
-    setCoreSnapshot({ timestampMs: now, hostName: 'HORUS-TEST-RIG', operatingSystem: 'Windows 11 Pro 24H2', uptimeSeconds: 284_440, cpuPercent: 47.6, logicalCpuCount: 16, perCpuPercent: [32, 58, 41, 69, 24, 51, 36, 63, 44, 71, 29, 55, 38, 61, 34, 49], cpuModel: 'AMD Ryzen 7 5700X3D 8-Core Processor', gpuModel: 'NVIDIA GeForce RTX 5070', gpuMemoryBytes: 12 * 1024 ** 3, gpuPercent: 54.2, totalMemoryBytes: 32 * 1024 ** 3, usedMemoryBytes: 20.4 * 1024 ** 3, totalSwapBytes: 8 * 1024 ** 3, usedSwapBytes: 1.7 * 1024 ** 3, receivedBytes: 3_820_000, transmittedBytes: 860_000 });
+    setCoreSnapshot({ timestampMs: now, hostName: 'HORUS-TEST-RIG', operatingSystem: 'Windows 11 Pro 24H2', uptimeSeconds: 284_440, cpuPercent: 47.6, logicalCpuCount: 16, perCpuPercent: [32, 58, 41, 69, 24, 51, 36, 63, 44, 71, 29, 55, 38, 61, 34, 49], cpuModel: 'AMD Ryzen 7 5700X3D 8-Core Processor', gpuModel: 'NVIDIA GeForce RTX 5070', gpuMemoryBytes: 12 * 1024 ** 3, gpuMemoryUsedBytes: 5.5 * 1024 ** 3, gpuPercent: 54.2, totalMemoryBytes: 32 * 1024 ** 3, usedMemoryBytes: 20.4 * 1024 ** 3, totalSwapBytes: 8 * 1024 ** 3, usedSwapBytes: 1.7 * 1024 ** 3, receivedBytes: 3_820_000, transmittedBytes: 860_000 });
     setNetworkRates({ received: 3_820_000, transmitted: 860_000, peak: 7_460_000 });
     setProcessSnapshot({ timestampMs: now, diskReadBytes: 38_400_000, diskWriteBytes: 12_700_000, processCount: 187, topProcesses: [
       { pid: 8420, name: 'Cyberpunk2077.exe', cpuPercent: 18.7, memoryBytes: 6.8 * 1024 ** 3, diskReadBytes: 18_200_000, diskWriteBytes: 4_200_000 },
@@ -599,7 +599,7 @@ function App() {
   const diskTotal = snapshot?.disks.reduce((sum, disk) => sum + disk.totalBytes, 0) ?? 0;
   const diskUsed = snapshot?.disks.reduce((sum, disk) => sum + disk.totalBytes - disk.availableBytes, 0) ?? 0;
   const sortedDisks = useMemo(() => [...(snapshot?.disks ?? [])].sort((left, right) => (left.mountPoint || left.name).localeCompare(right.mountPoint || right.name)), [snapshot?.disks]);
-  const compactWidth = 300 + sortedDisks.length * 56 + (snapshot?.gpuMemoryBytes ? 64 : 0);
+  const compactWidth = 300 + sortedDisks.length * 56 + (snapshot?.gpuMemoryBytes ? 96 : 0);
   const latestGpuSample = timeline.at(-1);
   const compactGpuPercent = latestGpuSample && latestGpuSample.timestampMs === snapshot?.timestampMs
     ? latestGpuSample.gpu
@@ -712,7 +712,7 @@ function App() {
     <button className={`compact-move ${windowDragging ? 'is-dragging' : ''}`} onMouseDown={(event) => void handleWindowDrag(event)} aria-label="Move mini window" title="Drag to move"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5v13M1.5 8h13M8 1.5 5.5 4M8 1.5 10.5 4M8 14.5 5.5 12M8 14.5 10.5 12M1.5 8 4 5.5M1.5 8 4 10.5M14.5 8 12 5.5M14.5 8 12 10.5" /></svg></button>
     <div className="compact-metric"><span>CPU</span><strong>{snapshot ? `${snapshot.cpuPercent.toFixed(0)}%` : '—'}</strong></div>
     <div className="compact-metric gpu" title="Latest GPU sample from Telemetry Timeline"><span>GPU</span><strong>{compactGpuPercent === undefined ? '—' : `${compactGpuPercent.toFixed(0)}%`}</strong></div>
-    {snapshot?.gpuMemoryBytes ? <div className="compact-metric compact-vram" title="Dedicated GPU memory capacity"><span>VRAM</span><strong>{formatBytes(snapshot.gpuMemoryBytes, 0)}</strong></div> : null}
+    {snapshot?.gpuMemoryBytes ? <div className="compact-metric compact-vram" title="Dedicated GPU memory in use / total capacity"><span>VRAM</span><strong>{formatBytes(snapshot.gpuMemoryUsedBytes, 1)} / {formatBytes(snapshot.gpuMemoryBytes, 1)}</strong></div> : null}
     <div className="compact-metric ram"><span>RAM</span><strong>{snapshot ? `${memoryPercent.toFixed(0)}%` : '—'}</strong></div>
     <div className="compact-disks" aria-label="Storage usage">{sortedDisks.map((disk) => <div className="compact-metric compact-disk" key={`${disk.name}-${disk.mountPoint}`} title={`${disk.mountPoint || disk.name}: ${formatBytes(disk.totalBytes - disk.availableBytes)} / ${formatBytes(disk.totalBytes)}`}><span>{disk.mountPoint || disk.name}</span><strong>{percent(disk.totalBytes - disk.availableBytes, disk.totalBytes).toFixed(0)}%</strong></div>)}</div>
     <button className="compact-restore" onClick={() => void toggleCompactLayout(false)} aria-label="Restore HORUS window" title="Restore"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 10 5-5 5 5" /></svg></button>
